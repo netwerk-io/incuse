@@ -18,6 +18,7 @@ import (
 
 	"github.com/vegardx/incuse/internal/config"
 	"github.com/vegardx/incuse/internal/incus"
+	"github.com/vegardx/incuse/internal/observability"
 	"github.com/vegardx/incuse/internal/orchestrator"
 	"github.com/vegardx/incuse/internal/runner"
 	"github.com/vegardx/incuse/internal/scaleset"
@@ -90,12 +91,21 @@ func run(ctx context.Context, logger *slog.Logger, cfg *config.Config) error {
 	}
 	defer incusClient.Close()
 
+	var (
+		rec       *observability.Recorder
+		obsServer *observability.Server
+	)
+	if cfg.Observability.ListenAddr != "" {
+		rec = observability.New(version, commit)
+		obsServer = observability.NewServer(cfg.Observability.ListenAddr, rec)
+	}
+
 	pat, appKey, err := readAuthCreds(cfg.GitHub.Auth)
 	if err != nil {
 		return fmt.Errorf("read github auth: %w", err)
 	}
 
-	ss, err := scaleset.New(scaleset.Options{
+	ssOpts := scaleset.Options{
 		Spec:              cfg.ScaleSet,
 		VCPUTiers:         cfg.Runner.VCPUTiers,
 		ConfigureURL:      cfg.GitHub.ConfigURL,
@@ -105,12 +115,19 @@ func run(ctx context.Context, logger *slog.Logger, cfg *config.Config) error {
 		AppInstallationID: cfg.GitHub.Auth.App.InstallationID,
 		Logger:            logger,
 		Version:           version,
-	})
+	}
+	if rec != nil {
+		ssOpts.MetricsRecorder = rec
+	}
+	ss, err := scaleset.New(ssOpts)
 	if err != nil {
 		return fmt.Errorf("scaleset new: %w", err)
 	}
 	if err := ss.Bootstrap(ctx); err != nil {
 		return fmt.Errorf("scaleset bootstrap: %w", err)
+	}
+	if obsServer != nil {
+		obsServer.MarkHealthy()
 	}
 	defer func() {
 		// Use a fresh context for shutdown — the parent ctx is already
@@ -124,21 +141,33 @@ func run(ctx context.Context, logger *slog.Logger, cfg *config.Config) error {
 
 	resolver := runner.NewLatestResolver(time.Hour)
 
-	orch, err := orchestrator.New(orchestrator.Config{
+	orchCfg := orchestrator.Config{
 		IncusClient:     incusClient,
 		ScaleSet:        ss,
 		ReleaseResolver: resolver,
 		IncusCfg:        cfg.Incus,
 		RunnerCfg:       cfg.Runner,
 		Logger:          logger,
-	})
+	}
+	if rec != nil {
+		orchCfg.Metrics = rec
+	}
+	orch, err := orchestrator.New(orchCfg)
 	if err != nil {
 		return fmt.Errorf("orchestrator new: %w", err)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
+	if obsServer != nil {
+		g.Go(func() error { return obsServer.Run(gctx) })
+	}
 	g.Go(func() error { return ss.Run(gctx, orch, orch) })
-	g.Go(func() error { return orch.Run(gctx) })
+	g.Go(func() error {
+		if obsServer != nil {
+			obsServer.MarkReady()
+		}
+		return orch.Run(gctx)
+	})
 	return g.Wait()
 }
 

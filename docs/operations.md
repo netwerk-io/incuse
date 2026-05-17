@@ -116,7 +116,44 @@ The on-disk config and unit are unchanged across patch releases. Check the relea
 
 ## Health checks
 
-Pre phase 7 (Prometheus + `/healthz`), the cheap shell-level check is:
+With `observability.listen_addr` set in config:
+
+```sh
+curl -fsS http://127.0.0.1:9090/healthz   # 200 once scaleset bootstrap succeeded
+curl -fsS http://127.0.0.1:9090/readyz    # 200 once orchestrator.Run started
+curl -fsS http://127.0.0.1:9090/metrics   # Prometheus exposition
+```
+
+`/healthz` and `/readyz` are intentionally separate — the former flips on after the scale-set is registered with GitHub, the latter once the orchestrator's main loop is actually running. A load balancer in front of multiple incuse hosts (future) can tell "alive" from "taking traffic".
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: incuse
+    static_configs:
+      - targets: ["rocket.lkv.netwerk.io:9090"]
+```
+
+### Useful metrics
+
+All metrics live under the `incuse_` prefix. The high-signal ones:
+
+| metric | type | meaning |
+|---|---|---|
+| `incuse_jobs_assigned_total` | counter | Jobs the orchestrator accepted (post spec resolution) |
+| `incuse_launches_total{result}` | counter | Incus launch outcomes (`ok` / `fail`) |
+| `incuse_launch_duration_seconds` | histogram | Wall-clock cost of one Incus launch |
+| `incuse_runner_lifetime_seconds` | histogram | JobAssigned → terminate, end-to-end |
+| `incuse_reaps_total{reason}` | counter | `registration_timeout` / `max_job_duration` / `drift_sweep` / `job_completed` |
+| `incuse_tracked_instances` | gauge | Live instances in the orchestrator's tracker |
+| `incuse_desired_runners` | gauge | Most recent target from GitHub |
+| `incuse_scaleset_*` | gauge | Mirrors `RunnerScaleSetStatistic` from the listener |
+| `incuse_build_info{version,commit}` | gauge | Always 1; for dashboards |
+
+Buckets are tuned for the bimodal job-duration profile (unit tests <2 min, builds hours). If your jobs cluster differently, edit `internal/observability/recorder.go`.
+
+Without an HTTP server, the cheap shell-level check is:
 
 ```sh
 systemctl is-active incuse

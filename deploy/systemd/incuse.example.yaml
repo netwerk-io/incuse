@@ -104,3 +104,10 @@ runner:
   # plus cloud-init).
   registration_timeout: 10m
   max_job_duration: 6h
+
+# Optional. Empty / absent disables the HTTP server entirely.
+# observability:
+#   # Bind address for /healthz, /readyz, /metrics. The default install
+#   # binds loopback only; expose via Prometheus over the network at
+#   # your own discretion (the endpoint has no auth).
+#   listen_addr: "127.0.0.1:9090"

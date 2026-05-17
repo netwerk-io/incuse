@@ -65,6 +65,16 @@ func (t *instanceTracker) remove(runnerName string) {
 // (`get` was retired with the JobAssigned -> tracker rework; lookups
 // happen by request id only.)
 
+func (t *instanceTracker) get(runnerName string) (trackedInstance, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	v, ok := t.m[runnerName]
+	if !ok {
+		return trackedInstance{}, false
+	}
+	return *v, true
+}
+
 func (t *instanceTracker) getByRequest(jobID int64) *trackedInstance {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
