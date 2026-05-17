@@ -81,7 +81,12 @@ func Render(spec CloudInitSpec) ([]byte, error) {
 //     runner user) and the systemd unit reads it via EnvironmentFile.
 //     Keeps it off the kernel command line and out of `ps`.
 //
-//   - The runner unit is Type=oneshot with ExecStopPost=/sbin/poweroff.
+//   - The runner unit is Type=oneshot. ExecStopPost calls poweroff
+//     with the systemd `+` prefix so the command runs as root
+//     regardless of the unit's User=runner setting; without the
+//     prefix, /sbin/poweroff fails with "Interactive authentication
+//     required" and the VM survives the runner exit, defeating the
+//     ephemeral cleanup path.
 //     When run.sh exits (job done, or job-cancelled), systemd fires
 //     poweroff, the VM stops, the orchestrator sees the stopped state
 //     and deletes the instance.
@@ -130,7 +135,7 @@ write_files:
       WorkingDirectory=/opt/runner
       EnvironmentFile=/etc/incuse/jit.env
       ExecStart=/opt/runner/run.sh --jitconfig ${INCUSE_JIT}
-      ExecStopPost=/sbin/poweroff
+      ExecStopPost=+/sbin/poweroff
       RemainAfterExit=no
       StandardOutput=journal
       StandardError=journal

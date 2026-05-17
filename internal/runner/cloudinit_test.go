@@ -86,7 +86,7 @@ func TestRender_EmbedsCriticalDirectives(t *testing.T) {
 		"hostname: incuse-runner-abc123",
 		"docker.io",
 		"INCUSE_JIT=ZmFrZS1qaXQtY29uZmlnLWJsb2I=",
-		"ExecStopPost=/sbin/poweroff",
+		"ExecStopPost=+/sbin/poweroff",
 		"https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz",
 		"/opt/runner/_work",
 	}
