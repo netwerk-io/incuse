@@ -137,7 +137,7 @@ write_files:
       WorkingDirectory=/opt/runner
       EnvironmentFile=/etc/incuse/jit.env
       ExecStart=/opt/runner/run.sh --jitconfig ${INCUSE_JIT}
-      ExecStopPost=+/bin/sleep 5
+      ExecStopPost=+/bin/sleep 15
       ExecStopPost=+/sbin/poweroff
       RemainAfterExit=no
       StandardOutput=journal

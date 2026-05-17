@@ -3,8 +3,10 @@ module github.com/netwerk-io/incuse
 go 1.25.6
 
 require (
-	github.com/actions/scaleset v0.3.0
+	github.com/actions/scaleset v0.4.0
 	github.com/lxc/incus/v6 v6.23.0
+	github.com/prometheus/client_golang v1.23.2
+	golang.org/x/sync v0.20.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -42,7 +44,6 @@ require (
 	github.com/opencontainers/umoci v0.6.1-0.20251213054154-70fc5ee1f4df // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/sftp v1.13.10 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
@@ -61,7 +62,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
