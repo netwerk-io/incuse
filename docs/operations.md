@@ -54,9 +54,9 @@ Once incuse is back up, the drift sweep picks up anything you missed within 30s.
 Every runner registration shows up under `Settings → Actions → Runners → <scale set name>` on the org. Idle entries with no matching VM in `incus list` are GitHub-side stragglers — they expire on their own (default ~14 days), but `gh api` works to clear them out:
 
 ```sh
-gh api -X GET "/orgs/vegardx/actions/runners?per_page=100" \
+gh api -X GET "/orgs/netwerk-io/actions/runners?per_page=100" \
   | jq -r '.runners[] | select(.status=="offline") | .id' \
-  | xargs -r -I{} gh api -X DELETE "/orgs/vegardx/actions/runners/{}"
+  | xargs -r -I{} gh api -X DELETE "/orgs/netwerk-io/actions/runners/{}"
 ```
 
 ## Rotating the GitHub PAT
@@ -105,8 +105,8 @@ incus list --project incuse -c name,config:user.incuse.managed -f csv \
 ```sh
 TAG=v0.2.0
 cd /tmp/incuse-install
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/SHA256SUMS"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/SHA256SUMS"
 sha256sum -c SHA256SUMS
 sudo install -m 0755 "incuse-${TAG}-linux-amd64" /usr/local/bin/incuse
 sudo systemctl restart incuse

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vegardx/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/config"
 )
 
 // trackedInstance is the orchestrator's per-runner record. Lives in

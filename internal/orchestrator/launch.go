@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/vegardx/incuse/internal/config"
-	"github.com/vegardx/incuse/internal/incus"
+	"github.com/netwerk-io/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/incus"
 )
 
 // metadata-key prefix for incuse-managed instances. The reaper's

@@ -11,7 +11,7 @@ import (
 
 	ssapi "github.com/actions/scaleset"
 
-	"github.com/vegardx/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/config"
 )
 
 // fakeAPI is the slice of *ssapi.Client that reconcileScaleSet drives.
@@ -214,7 +214,7 @@ func validOptions() Options {
 			MaxRunners:  4,
 		},
 		VCPUTiers:    []int{1, 2, 4},
-		ConfigureURL: "https://github.com/vegardx",
+		ConfigureURL: "https://github.com/netwerk-io",
 		PAT:          "ghp_test",
 		Logger:       discardLogger(),
 		Version:      "test",

@@ -10,7 +10,7 @@
 
 github:
   # Org URL (or repo / enterprise — anything `actions/runner` accepts).
-  config_url: https://github.com/vegardx
+  config_url: https://github.com/netwerk-io
 
   auth:
     # Authentication mode. `pat` is the MVP default. `app` is wired

@@ -11,7 +11,7 @@ import (
 func validYAML() string {
 	return `
 github:
-  config_url: https://github.com/vegardx
+  config_url: https://github.com/netwerk-io
   auth:
     mode: pat
     pat_file: /etc/incuse/github.pat
@@ -71,7 +71,7 @@ func TestValidate_RequiresAuthConfig(t *testing.T) {
 	}{
 		{
 			"missing config_url",
-			strings.Replace(validYAML(), "config_url: https://github.com/vegardx", "config_url: \"\"", 1),
+			strings.Replace(validYAML(), "config_url: https://github.com/netwerk-io", "config_url: \"\"", 1),
 			"github.config_url is required",
 		},
 		{

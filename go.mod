@@ -1,4 +1,4 @@
-module github.com/vegardx/incuse
+module github.com/netwerk-io/incuse
 
 go 1.25.6
 

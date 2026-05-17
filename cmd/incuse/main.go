@@ -16,12 +16,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/vegardx/incuse/internal/config"
-	"github.com/vegardx/incuse/internal/incus"
-	"github.com/vegardx/incuse/internal/observability"
-	"github.com/vegardx/incuse/internal/orchestrator"
-	"github.com/vegardx/incuse/internal/runner"
-	"github.com/vegardx/incuse/internal/scaleset"
+	"github.com/netwerk-io/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/incus"
+	"github.com/netwerk-io/incuse/internal/observability"
+	"github.com/netwerk-io/incuse/internal/orchestrator"
+	"github.com/netwerk-io/incuse/internal/runner"
+	"github.com/netwerk-io/incuse/internal/scaleset"
 )
 
 // Stamped by the Makefile via -ldflags.

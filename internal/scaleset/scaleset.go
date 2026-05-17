@@ -20,7 +20,7 @@ import (
 	ssapi "github.com/actions/scaleset"
 	sslistener "github.com/actions/scaleset/listener"
 
-	"github.com/vegardx/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/config"
 )
 
 // JITMinter mints a JIT runner configuration for a JobAssigned event.
