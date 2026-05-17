@@ -21,10 +21,11 @@ import (
 
 // Config is the top-level schema. Loaded with Load.
 type Config struct {
-	GitHub   GitHubConfig   `yaml:"github"`
-	ScaleSet ScaleSetConfig `yaml:"scale_set"`
-	Incus    IncusConfig    `yaml:"incus"`
-	Runner   RunnerConfig   `yaml:"runner"`
+	GitHub        GitHubConfig        `yaml:"github"`
+	ScaleSet      ScaleSetConfig      `yaml:"scale_set"`
+	Incus         IncusConfig         `yaml:"incus"`
+	Runner        RunnerConfig        `yaml:"runner"`
+	Observability ObservabilityConfig `yaml:"observability"`
 }
 
 // GitHubConfig points incuse at one GitHub org/repo/enterprise scope and
@@ -97,6 +98,16 @@ const (
 	AuthModePAT = "pat"
 	AuthModeApp = "app"
 )
+
+// ObservabilityConfig turns on the HTTP server that exposes /healthz,
+// /readyz, and /metrics. ListenAddr empty disables the server
+// entirely — incuse runs perfectly fine without metrics, the unit
+// just gets harder to monitor.
+type ObservabilityConfig struct {
+	// ListenAddr is a Go net.Listen address (e.g. ":9090",
+	// "127.0.0.1:9090"). Empty disables the server.
+	ListenAddr string `yaml:"listen_addr"`
+}
 
 // Load reads the YAML file at path, populates defaults, validates, and
 // returns the result. ENOENT is reported as a typed error so callers
