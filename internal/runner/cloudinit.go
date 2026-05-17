@@ -71,13 +71,21 @@ func Render(spec CloudInitSpec) ([]byte, error) {
 //     not pinned because we always-track the latest release; pinning
 //     would require fetching a separate sha256 manifest. Follow-up if
 //     supply-chain hardening becomes a priority.
-//   - JIT config goes into /etc/incuse/jit.env (mode 0600, owned by the
+//
+//   - JIT config goes into /etc/incuse/jit.env (mode 0600, owned by
+//     root — systemd reads EnvironmentFile as PID 1 before dropping
+//     to User=runner, so a root-owned file is both sufficient and
+//     keeps cloud-init's write_files step independent of the
+//     users-groups module ordering.
+//
 //     runner user) and the systemd unit reads it via EnvironmentFile.
 //     Keeps it off the kernel command line and out of `ps`.
+//
 //   - The runner unit is Type=oneshot with ExecStopPost=/sbin/poweroff.
 //     When run.sh exits (job done, or job-cancelled), systemd fires
 //     poweroff, the VM stops, the orchestrator sees the stopped state
 //     and deletes the instance.
+//
 //   - Docker is mandatory: jobs that use docker actions assume it; we
 //     run on a VM precisely so docker-in-VM works without nesting
 //     headaches.
@@ -105,7 +113,6 @@ packages:
 write_files:
   - path: /etc/incuse/jit.env
     permissions: "0600"
-    owner: runner:runner
     content: |
       INCUSE_JIT={{.JITConfig}}
   - path: /etc/systemd/system/incuse-runner.service

@@ -22,7 +22,6 @@ packages:
 write_files:
   - path: /etc/incuse/jit.env
     permissions: "0600"
-    owner: runner:runner
     content: |
       INCUSE_JIT=ZmFrZS1qaXQtY29uZmlnLWJsb2I=
   - path: /etc/systemd/system/incuse-runner.service
