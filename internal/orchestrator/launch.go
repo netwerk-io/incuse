@@ -15,25 +15,29 @@ import (
 // other tooling, as long as the other tooling doesn't reuse this
 // prefix.
 const (
-	metaManaged    = "user.incuse.managed"
-	metaRunnerName = "user.incuse.runner_name"
-	metaJobID      = "user.incuse.job_id"
-	metaScaleSetID = "user.incuse.scale_set_id"
-	metaMintedAt   = "user.incuse.minted_at"
+	metaManaged         = "user.incuse.managed"
+	metaRunnerName      = "user.incuse.runner_name"
+	metaJobID           = "user.incuse.job_id"
+	metaWorkflowRunID   = "user.incuse.workflow_run_id"
+	metaRunnerRequestID = "user.incuse.runner_request_id"
+	metaScaleSetID      = "user.incuse.scale_set_id"
+	metaMintedAt        = "user.incuse.minted_at"
 )
 
 // launchInputs bundles the per-launch context for buildLaunchRequest.
 // Keeping it in one struct keeps the call site readable.
 type launchInputs struct {
-	runnerName  string
-	spec        config.RunnerSpec
-	incusCfg    config.IncusConfig
-	runnerCfg   config.RunnerConfig
-	cloudInit   []byte
-	jobID       int64
-	scaleSetID  int
-	mintedAt    time.Time
-	description string
+	runnerName      string
+	spec            config.RunnerSpec
+	incusCfg        config.IncusConfig
+	runnerCfg       config.RunnerConfig
+	cloudInit       []byte
+	jobID           string
+	workflowRunID   int64
+	runnerRequestID int64
+	scaleSetID      int
+	mintedAt        time.Time
+	description     string
 }
 
 // buildLaunchRequest assembles the incus.LaunchRequest from a resolved
@@ -50,11 +54,13 @@ func buildLaunchRequest(in launchInputs) incus.LaunchRequest {
 		"cloud-init.user-data": string(in.cloudInit),
 		// Tag every instance so the reaper's drift sweep can spot
 		// orphans, and so an operator can grep for ours.
-		metaManaged:    "true",
-		metaRunnerName: in.runnerName,
-		metaJobID:      strconv.FormatInt(in.jobID, 10),
-		metaScaleSetID: strconv.Itoa(in.scaleSetID),
-		metaMintedAt:   in.mintedAt.UTC().Format(time.RFC3339),
+		metaManaged:         "true",
+		metaRunnerName:      in.runnerName,
+		metaJobID:           in.jobID,
+		metaWorkflowRunID:   strconv.FormatInt(in.workflowRunID, 10),
+		metaRunnerRequestID: strconv.FormatInt(in.runnerRequestID, 10),
+		metaScaleSetID:      strconv.Itoa(in.scaleSetID),
+		metaMintedAt:        in.mintedAt.UTC().Format(time.RFC3339),
 	}
 
 	// Override the profile's root device size only — leave pool, path,

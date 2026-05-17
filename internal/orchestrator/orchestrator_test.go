@@ -20,20 +20,28 @@ import (
 // fakeIncus records every Launch/Stop/Delete/List call. Test asserts
 // against the recorded sequence.
 type fakeIncus struct {
-	mu         sync.Mutex
-	launches   []incus.LaunchRequest
-	stops      []string
-	deletes    []string
-	listed     int
-	remote     []incus.Instance
-	launchErr  error
-	stopErr    error
-	deleteErr  error
-	listErr    error
-	launchGate chan struct{} // optional: blocks Launch until closed
+	mu            sync.Mutex
+	launches      []incus.LaunchRequest
+	stops         []string
+	deletes       []string
+	listed        int
+	remote        []incus.Instance
+	launchErr     error
+	stopErr       error
+	deleteErr     error
+	listErr       error
+	launchGate    chan struct{} // optional: blocks Launch until closed
+	launchEntered chan struct{} // optional: closed by Launch before it blocks on gate
 }
 
 func (f *fakeIncus) Launch(_ context.Context, req incus.LaunchRequest) (*incus.Instance, error) {
+	if f.launchEntered != nil {
+		select {
+		case <-f.launchEntered:
+		default:
+			close(f.launchEntered)
+		}
+	}
 	if f.launchGate != nil {
 		<-f.launchGate
 	}
@@ -263,8 +271,8 @@ func TestMint_LaunchesVMWithExpectedShape(t *testing.T) {
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
 		JobMessageBase: ssapi.JobMessageBase{
-			RunnerRequestID: 1234,
-			RequestLabels:   []string{"incuse-test", "vcpu=2"},
+			JobID: "j-1234", RunnerRequestID: 1234,
+			RequestLabels: []string{"incuse-test", "vcpu=2"},
 		},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
@@ -292,8 +300,11 @@ func TestMint_LaunchesVMWithExpectedShape(t *testing.T) {
 	if got := req.Config[metaManaged]; got != "true" {
 		t.Errorf("%s: want true, got %q", metaManaged, got)
 	}
-	if got := req.Config[metaJobID]; got != "1234" {
-		t.Errorf("%s: want 1234, got %q", metaJobID, got)
+	if got := req.Config[metaJobID]; got != "j-1234" {
+		t.Errorf("%s: want j-1234, got %q", metaJobID, got)
+	}
+	if got := req.Config[metaRunnerRequestID]; got != "1234" {
+		t.Errorf("%s: want 1234, got %q", metaRunnerRequestID, got)
 	}
 	if got := req.Config[metaScaleSetID]; got != "42" {
 		t.Errorf("%s: want 42, got %q", metaScaleSetID, got)
@@ -321,8 +332,8 @@ func TestMint_LaunchFailureRemovesRunnerFromGitHub(t *testing.T) {
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
 		JobMessageBase: ssapi.JobMessageBase{
-			RunnerRequestID: 1,
-			RequestLabels:   []string{"incuse-test"},
+			JobID: "j-1", RunnerRequestID: 1,
+			RequestLabels: []string{"incuse-test"},
 		},
 	}); err != nil {
 		t.Fatalf("mint must not return error to listener: %v", err)
@@ -362,8 +373,8 @@ func TestMint_BadLabelLogsAndContinues(t *testing.T) {
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
 		JobMessageBase: ssapi.JobMessageBase{
-			RunnerRequestID: 1,
-			RequestLabels:   []string{"vcpu=1", "vcpu=2"}, // conflict
+			JobID: "j-1", RunnerRequestID: 1,
+			RequestLabels: []string{"vcpu=1", "vcpu=2"}, // conflict
 		},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
@@ -380,21 +391,21 @@ func TestHandleJobStarted_StampsRunnerStartedAt(t *testing.T) {
 	gate := o.cfg.IncusClient.(*fakeIncus).launchGate
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 99, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-99", RunnerRequestID: 99, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 
 	clk.advance(5 * time.Second)
 	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 99},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-99", RunnerRequestID: 99},
 	}); err != nil {
 		t.Fatalf("handle started: %v", err)
 	}
 	close(gate)
 	waitForLaunches(t, o.cfg.IncusClient.(*fakeIncus), 1)
 
-	got := o.tracker.getByRequest(99)
+	got := o.tracker.getByJobID("j-99")
 	if got == nil {
 		t.Fatal("tracked instance disappeared")
 	}
@@ -409,14 +420,14 @@ func TestHandleJobStarted_StampsRunnerStartedAt(t *testing.T) {
 func TestHandleJobCompleted_StopsAndDeletes(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 11, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-11", RunnerRequestID: 11, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
 
 	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 11},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-11", RunnerRequestID: 11},
 	}); err != nil {
 		t.Fatalf("handle completed: %v", err)
 	}
@@ -436,7 +447,7 @@ func TestHandleJobCompleted_StopsAndDeletes(t *testing.T) {
 func TestHandleJobCompleted_UnknownRequestIsNoop(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
 	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 999},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-999", RunnerRequestID: 999},
 	}); err != nil {
 		t.Fatalf("handle completed: %v", err)
 	}
@@ -468,7 +479,7 @@ func TestReap_RegistrationTimeout(t *testing.T) {
 	o, fi, fs, clk := newTestOrchestrator(t, nil)
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -493,7 +504,7 @@ func TestReap_DoesNotReapBeforeTimeout(t *testing.T) {
 	o, fi, _, clk := newTestOrchestrator(t, nil)
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -511,14 +522,14 @@ func TestReap_MaxJobDuration(t *testing.T) {
 	o, fi, _, clk := newTestOrchestrator(t, nil)
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
 
 	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1},
 	}); err != nil {
 		t.Fatalf("started: %v", err)
 	}
@@ -562,7 +573,7 @@ func TestReap_DriftSweepIgnoresInstancesInTracker(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
 
 	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
+		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
 	}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -667,11 +678,11 @@ func TestMetrics_HappyPath_AssignedThenLaunchOKThenJobCompleted(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
 	ctx := t.Context()
 
-	if err := o.Mint(ctx, &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+	if err := o.Mint(ctx, &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
-	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
 		t.Fatalf("HandleJobCompleted: %v", err)
 	}
 
@@ -700,7 +711,7 @@ func TestMetrics_LaunchFailureBumpsLaunchFail(t *testing.T) {
 	fm := newFakeMetrics()
 	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
 	fi.launchErr = errors.New("boom")
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
@@ -722,7 +733,7 @@ func TestMetrics_ReapReasonsRoute(t *testing.T) {
 		c.Metrics = fm
 		c.RunnerCfg.RegistrationTimeout = time.Minute
 	})
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 	clk.advance(2 * time.Minute)
@@ -731,5 +742,105 @@ func TestMetrics_ReapReasonsRoute(t *testing.T) {
 	_, _, _, reasons := fm.snapshot()
 	if reasons["registration_timeout"] != 1 {
 		t.Errorf("reap reasons: want registration_timeout=1, got %v", reasons)
+	}
+}
+
+// Regression for the rocket deploy: every JobAssigned/JobCompleted on
+// our broker session arrived with RunnerRequestID=0. Without
+// JobID-based matching the tracker mis-routes JobCompleted to
+// whatever runner happens to be in flight. JobID is the stable key.
+func TestTracker_MatchesByJobIDWhenRunnerRequestIDIsZero(t *testing.T) {
+	o, fi, _, _ := newTestOrchestrator(t, nil)
+	ctx := t.Context()
+	if err := o.Mint(ctx, &ssapi.JobAssigned{
+		JobMessageBase: ssapi.JobMessageBase{
+			JobID:           "abc-123",
+			RunnerRequestID: 0,
+		},
+	}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	waitForLaunches(t, fi, 1)
+
+	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{
+		JobMessageBase: ssapi.JobMessageBase{
+			JobID:           "abc-123",
+			RunnerRequestID: 0,
+		},
+	}); err != nil {
+		t.Fatalf("HandleJobCompleted: %v", err)
+	}
+	_, stops, deletes := fi.snapshot()
+	if len(stops) != 1 || len(deletes) != 1 {
+		t.Fatalf("want one stop+delete, got stops=%v deletes=%v", stops, deletes)
+	}
+	if o.tracker.size() != 0 {
+		t.Errorf("tracker size: want 0, got %d", o.tracker.size())
+	}
+}
+
+// Regression for the rocket deploy: a JobCompleted that arrives while
+// IncusClient.Launch is still in flight must NOT call Stop/Delete
+// (Incus refuses delete-during-create). Instead, set a termination
+// flag so the launch goroutine handles teardown after Launch returns.
+func TestRace_JobCompletedDuringLaunchDefersTeardown(t *testing.T) {
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	o, fi, _, _ := newTestOrchestrator(t, nil)
+	fi.launchGate = gate
+	fi.launchEntered = entered
+	ctx := t.Context()
+
+	if err := o.Mint(ctx, &ssapi.JobAssigned{
+		JobMessageBase: ssapi.JobMessageBase{JobID: "race-1"},
+	}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	// Wait until the launch goroutine has actually entered
+	// IncusClient.Launch (and is now blocked on gate). Otherwise the
+	// goroutine might still be at the terminationPending pre-check
+	// and bail early via the abort path, which is a different
+	// behaviour than the one we're testing here.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Launch never entered")
+	}
+
+	// JobCompleted arrives mid-flight.
+	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{
+		JobMessageBase: ssapi.JobMessageBase{JobID: "race-1"},
+	}); err != nil {
+		t.Fatalf("HandleJobCompleted: %v", err)
+	}
+
+	// At this point Stop/Delete must NOT have been called — Launch
+	// is still blocked.
+	_, stops, deletes := fi.snapshot()
+	if len(stops) != 0 || len(deletes) != 0 {
+		t.Fatalf("Stop/Delete fired during launch: stops=%v deletes=%v", stops, deletes)
+	}
+	if o.tracker.size() != 1 {
+		t.Fatalf("tracker should still hold the entry; size=%d", o.tracker.size())
+	}
+
+	// Unblock Launch. The goroutine should now see TerminationPending,
+	// transition to running, and call Stop+Delete.
+	close(gate)
+
+	// Poll until teardown happens.
+	for i := 0; i < 200; i++ {
+		_, stops, deletes = fi.snapshot()
+		if len(stops) == 1 && len(deletes) == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(stops) != 1 || len(deletes) != 1 {
+		t.Fatalf("expected one stop+delete after launch unblocks; stops=%v deletes=%v", stops, deletes)
+	}
+	if o.tracker.size() != 0 {
+		t.Errorf("tracker should be empty after teardown; size=%d", o.tracker.size())
 	}
 }
