@@ -1,0 +1,20 @@
+name: incuse smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: [self-hosted, linux, x64, incuse-rocket]
+    steps:
+      - name: Show host
+        run: |
+          uname -a
+          cat /etc/os-release
+          ip -4 addr show
+          nproc
+          free -m
+      - name: Sleep
+        run: sleep 5
+      - name: Done
+        run: echo done
