@@ -32,7 +32,7 @@ type Config struct {
 // names the auth strategy.
 type GitHubConfig struct {
 	// ConfigURL is the per-org / per-repo / per-enterprise URL the
-	// scaleset client expects, e.g. https://github.com/vegardx.
+	// scaleset client expects, e.g. https://github.com/netwerk-io.
 	ConfigURL string     `yaml:"config_url"`
 	Auth      AuthConfig `yaml:"auth"`
 }

@@ -1,6 +1,6 @@
 [Unit]
 Description=incuse — single-host GitHub Actions scale-set orchestrator on Incus
-Documentation=https://github.com/vegardx/incuse
+Documentation=https://github.com/netwerk-io/incuse
 After=network-online.target incus.service
 Wants=network-online.target
 Requires=incus.service

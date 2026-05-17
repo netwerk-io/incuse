@@ -56,11 +56,11 @@ Either install the release artefacts:
 ```sh
 TAG=v0.1.0
 mkdir -p /tmp/incuse-install && cd /tmp/incuse-install
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/incuse.service"
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/incuse.example.yaml"
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/install.sh"
-curl -fsSLO "https://github.com/vegardx/incuse/releases/download/${TAG}/SHA256SUMS"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse.service"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse.example.yaml"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/install.sh"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/SHA256SUMS"
 sha256sum -c SHA256SUMS
 sudo bash install.sh "./incuse-${TAG}-linux-amd64"
 ```

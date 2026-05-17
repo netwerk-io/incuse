@@ -34,9 +34,9 @@ import (
 
 	ssapi "github.com/actions/scaleset"
 
-	"github.com/vegardx/incuse/internal/config"
-	"github.com/vegardx/incuse/internal/incus"
-	"github.com/vegardx/incuse/internal/runner"
+	"github.com/netwerk-io/incuse/internal/config"
+	"github.com/netwerk-io/incuse/internal/incus"
+	"github.com/netwerk-io/incuse/internal/runner"
 )
 
 // MetricsHook is the slice of *observability.Recorder the
