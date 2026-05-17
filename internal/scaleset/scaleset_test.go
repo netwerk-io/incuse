@@ -272,7 +272,7 @@ func TestNew_AcceptsValidPATMode(t *testing.T) {
 
 func TestRun_RequiresBootstrap(t *testing.T) {
 	ss, _ := New(validOptions())
-	err := ss.Run(t.Context(), nil, &recordingMinter{})
+	err := ss.Run(t.Context(), nil)
 	if err == nil || !contains(err.Error(), "Bootstrap must succeed") {
 		t.Fatalf("want pre-bootstrap guard, got %v", err)
 	}

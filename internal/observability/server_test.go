@@ -51,7 +51,7 @@ func TestServer_HealthAndReady(t *testing.T) {
 
 func TestServer_MetricsEndpoint(t *testing.T) {
 	rec := New("v0", "abc")
-	rec.JobAssigned()
+	rec.RunnerSpawned()
 	rec.LaunchOK()
 
 	srv := NewServer("127.0.0.1:0", rec)
@@ -72,7 +72,7 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	if !strings.Contains(string(body), "incuse_jobs_assigned_total") {
+	if !strings.Contains(string(body), "incuse_runners_spawned_total") {
 		t.Errorf("scrape did not include jobs_assigned counter; body=%q", string(body))
 	}
 }

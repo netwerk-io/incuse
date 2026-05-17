@@ -7,61 +7,65 @@ import (
 	"github.com/netwerk-io/incuse/internal/config"
 )
 
-// trackedInstance is the orchestrator's per-runner record. Lives in
-// memory only; the reaper's drift sweep is the recovery mechanism for
-// orchestrator restarts.
-type trackedInstance struct {
-	RunnerName      string
-	JobID           string // upstream JobMessageBase.JobID — stable, populated, primary key
-	RunnerRequestID int64  // upstream JobMessageBase.RunnerRequestID — empirically zero for some broker messages, kept for diagnostics
-	WorkflowRunID   int64  // upstream JobMessageBase.WorkflowRunID — for cross-referencing with gh CLI
-	RunnerID        int64  // GitHub-side runner registration id, for RemoveRunner cleanup
-	LaunchedAt      time.Time
-	RunnerStartedAt time.Time
-	Spec            config.RunnerSpec
-	ScaleSetID      int
-	Status          instanceStatus
-	// TerminationPending is set by HandleJobCompleted (or any other
-	// caller of terminateInstance) when teardown is requested while
-	// the launch goroutine is still running CreateInstance. Incus
-	// rejects delete-during-create, so the launch goroutine reads
-	// this after Launch returns and tears the instance down itself.
+// trackedRunner is the orchestrator's per-runner record. Each runner
+// is one of three states; the tracker is the source of truth for
+// what we have running on Incus.
+//
+// We follow upstream actions/scaleset's pattern: idle runners exist
+// in the pool, GitHub's broker dispatches jobs to them, JobStarted
+// transitions idle->busy, JobCompleted transitions busy->reaped.
+// Job-to-runner mapping is GitHub's responsibility, not ours; trying
+// to bind a JIT mint to a specific JobAssigned races with the broker
+// and ends up with stuck attribution (the bug we hit on the rocket
+// 10x burst smoke).
+type trackedRunner struct {
+	Name       string
+	RunnerID   int64 // GitHub-side runner registration id, for RemoveRunner cleanup
+	LaunchedAt time.Time
+	BusyAt     time.Time // zero while idle/launching
+	Spec       config.RunnerSpec
+	ScaleSetID int
+	State      runnerState
+	// TerminationPending: HandleJobCompleted (or any other
+	// terminate caller) sets this when teardown is requested while
+	// CreateInstance is still in flight. The launch goroutine reads
+	// it after Launch returns and tears down rather than transitioning
+	// to idle.
 	TerminationPending bool
 }
 
-type instanceStatus int
+type runnerState int
 
 const (
-	// statusLaunching means we have minted a JIT and asked Incus to
-	// create the instance, but the create+start operation has not
-	// returned yet.
-	statusLaunching instanceStatus = iota
-	// statusRunning means the Incus launch operation completed
-	// successfully. The runner may or may not have registered yet.
-	statusRunning
-	// statusStarted means the runner picked up its assigned job. The
-	// reaper switches from registration-timeout to max-job-duration
-	// once we hit this state.
-	statusStarted
+	// statusLaunching: IncusClient.Launch in flight; runner has not
+	// registered with GitHub yet.
+	statusLaunching runnerState = iota
+	// statusIdle: launch ok, runner registered, awaiting a job
+	// assignment from GitHub's dispatcher.
+	statusIdle
+	// statusBusy: HandleJobStarted received; runner is executing a
+	// job. Reaper switches from registration-timeout to
+	// max-job-duration semantics.
+	statusBusy
 )
 
 // instanceTracker is a small thread-safe registry keyed by runner
-// name. The orchestrator has exactly one instance per name (Incus
+// name. The orchestrator has exactly one runner per name (Incus
 // enforces uniqueness in a project) so we can use it as the primary
 // key throughout.
 type instanceTracker struct {
 	mu sync.RWMutex
-	m  map[string]*trackedInstance
+	m  map[string]*trackedRunner
 }
 
 func newInstanceTracker() *instanceTracker {
-	return &instanceTracker{m: make(map[string]*trackedInstance)}
+	return &instanceTracker{m: make(map[string]*trackedRunner)}
 }
 
-func (t *instanceTracker) add(inst *trackedInstance) {
+func (t *instanceTracker) add(r *trackedRunner) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.m[inst.RunnerName] = inst
+	t.m[r.Name] = r
 }
 
 func (t *instanceTracker) remove(runnerName string) {
@@ -70,59 +74,54 @@ func (t *instanceTracker) remove(runnerName string) {
 	delete(t.m, runnerName)
 }
 
-func (t *instanceTracker) get(runnerName string) (trackedInstance, bool) {
+func (t *instanceTracker) get(runnerName string) (trackedRunner, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	v, ok := t.m[runnerName]
 	if !ok {
-		return trackedInstance{}, false
+		return trackedRunner{}, false
 	}
 	return *v, true
 }
 
-// getByJobID looks up a tracked instance by upstream JobID. JobID is
-// a non-empty string for every JobAssigned / JobStarted / JobCompleted
-// message GitHub sends; RunnerRequestID by contrast is empirically
-// zero for some broker messages, which is why we don't use it as a
-// match key.
-func (t *instanceTracker) getByJobID(jobID string) *trackedInstance {
-	if jobID == "" {
-		return nil
-	}
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	for _, v := range t.m {
-		if v.JobID == jobID {
-			out := *v
-			return &out
-		}
-	}
-	return nil
-}
-
-// markStartedByJobID stamps RunnerStartedAt for the instance whose
-// upstream JobID matches and returns the matched runner name. Empty
-// string means no match.
-func (t *instanceTracker) markStartedByJobID(jobID string, now time.Time) string {
-	if jobID == "" {
-		return ""
-	}
+// markIdle moves a runner from statusLaunching to statusIdle and
+// returns whether termination was requested while the launch was in
+// flight. (_, false) means the entry was removed before the launch
+// completed.
+func (t *instanceTracker) markIdle(runnerName string, now time.Time) (terminationRequested bool, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for _, v := range t.m {
-		if v.JobID == jobID {
-			v.RunnerStartedAt = now
-			v.Status = statusStarted
-			return v.RunnerName
-		}
+	v, exists := t.m[runnerName]
+	if !exists {
+		return false, false
 	}
-	return ""
+	if v.State == statusLaunching {
+		v.State = statusIdle
+		v.LaunchedAt = now
+	}
+	return v.TerminationPending, true
+}
+
+// markBusy stamps BusyAt and transitions the runner to statusBusy.
+// Returns the previous state and whether the entry existed; callers
+// can log a warning on mismatched events.
+func (t *instanceTracker) markBusy(runnerName string, now time.Time) (previousState runnerState, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	v, exists := t.m[runnerName]
+	if !exists {
+		return 0, false
+	}
+	prev := v.State
+	v.BusyAt = now
+	v.State = statusBusy
+	return prev, true
 }
 
 // markForTermination flips the TerminationPending bit on a tracked
-// instance and returns its current status. A return of (_, false)
-// means the entry was already gone — caller should no-op.
-func (t *instanceTracker) markForTermination(runnerName string) (instanceStatus, bool) {
+// runner and returns its current state. (_, false) means the entry
+// was already gone — caller should no-op.
+func (t *instanceTracker) markForTermination(runnerName string) (runnerState, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v, ok := t.m[runnerName]
@@ -130,12 +129,11 @@ func (t *instanceTracker) markForTermination(runnerName string) (instanceStatus,
 		return 0, false
 	}
 	v.TerminationPending = true
-	return v.Status, true
+	return v.State, true
 }
 
 // terminationPending is a cheap pre-check the launch goroutine uses
-// before issuing IncusClient.Launch — if a JobCompleted has already
-// arrived, we'd rather not pay for the create at all.
+// before issuing IncusClient.Launch.
 func (t *instanceTracker) terminationPending(runnerName string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -143,31 +141,13 @@ func (t *instanceTracker) terminationPending(runnerName string) bool {
 	return ok && v.TerminationPending
 }
 
-// markLaunched stamps the create-completed timestamp and returns
-// whether termination was requested while the launch was in flight.
-// On true, the caller should tear down the just-created instance.
-// The (_, false) return only happens if the entry was removed (e.g.
-// by a previous failure path) before the launch finished.
-func (t *instanceTracker) markLaunched(runnerName string, now time.Time) (terminationRequested bool, ok bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	v, exists := t.m[runnerName]
-	if !exists {
-		return false, false
-	}
-	if v.Status == statusLaunching {
-		v.Status = statusRunning
-		v.LaunchedAt = now
-	}
-	return v.TerminationPending, true
-}
-
-// snapshot returns a stable copy of the tracker contents. Used by the
-// reaper so the sweep doesn't hold the lock across slow Incus calls.
-func (t *instanceTracker) snapshot() []trackedInstance {
+// snapshot returns a stable copy of the tracker contents. Used by
+// the reaper so the sweep doesn't hold the lock across slow Incus
+// calls.
+func (t *instanceTracker) snapshot() []trackedRunner {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	out := make([]trackedInstance, 0, len(t.m))
+	out := make([]trackedRunner, 0, len(t.m))
 	for _, v := range t.m {
 		out = append(out, *v)
 	}

@@ -25,9 +25,9 @@ type Recorder struct {
 	registry *prometheus.Registry
 
 	// Job lifecycle counters.
-	jobsAssigned  prometheus.Counter
-	jobsStarted   prometheus.Counter
-	jobsCompleted *prometheus.CounterVec
+	runnersSpawned prometheus.Counter
+	jobsStarted    prometheus.Counter
+	jobsCompleted  *prometheus.CounterVec
 
 	// Launch + reap.
 	launches *prometheus.CounterVec
@@ -60,10 +60,10 @@ func New(version, commit string) *Recorder {
 	r := prometheus.NewRegistry()
 	rec := &Recorder{
 		registry: r,
-		jobsAssigned: prometheus.NewCounter(prometheus.CounterOpts{
+		runnersSpawned: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "incuse",
-			Name:      "jobs_assigned_total",
-			Help:      "Number of GitHub JobAssigned messages incuse has acted on (i.e. successfully resolved a runner spec for).",
+			Name:      "runners_spawned_total",
+			Help:      "Number of idle runners incuse has spawned to satisfy GitHub's desired-runner-count.",
 		}),
 		jobsStarted: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "incuse",
@@ -127,7 +127,7 @@ func New(version, commit string) *Recorder {
 	rec.buildInfo.WithLabelValues(version, commit).Set(1)
 
 	r.MustRegister(
-		rec.jobsAssigned,
+		rec.runnersSpawned,
 		rec.jobsStarted,
 		rec.jobsCompleted,
 		rec.launches,
@@ -200,12 +200,10 @@ func (r *Recorder) RecordDesiredRunners(count int) {
 
 // --- incuse-side hooks ------------------------------------------------
 
-// JobAssigned increments after the orchestrator has resolved a runner
-// spec and queued a launch. This is "we are going to act on this job",
-// not "GitHub assigned a job" — the listener already counts the
-// latter via RecordStatistics.
-func (r *Recorder) JobAssigned() {
-	r.jobsAssigned.Inc()
+// RunnerSpawned increments when the orchestrator has decided to mint
+// a new idle runner in response to GitHub's desired-runner-count.
+func (r *Recorder) RunnerSpawned() {
+	r.runnersSpawned.Inc()
 }
 
 // LaunchOK / LaunchFail bucket Incus launch outcomes.

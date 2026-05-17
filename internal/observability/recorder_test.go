@@ -35,15 +35,15 @@ func TestRecorder_NilStatisticsIsNoop(t *testing.T) {
 func TestRecorder_JobLifecycleCounters(t *testing.T) {
 	rec := New("", "")
 
-	rec.JobAssigned()
-	rec.JobAssigned()
+	rec.RunnerSpawned()
+	rec.RunnerSpawned()
 	rec.RecordJobStarted(nil)
 	rec.RecordJobCompleted(nil)
 	rec.RecordJobCompleted(nil)
 	rec.RecordJobCompleted(nil)
 	rec.RecordDesiredRunners(8)
 
-	if got := testutil.ToFloat64(rec.jobsAssigned); got != 2 {
+	if got := testutil.ToFloat64(rec.runnersSpawned); got != 2 {
 		t.Errorf("jobs_assigned: want 2, got %v", got)
 	}
 	if got := testutil.ToFloat64(rec.jobsStarted); got != 1 {
@@ -100,7 +100,7 @@ func TestRecorder_BuildInfoLabelled(t *testing.T) {
 
 func TestRecorder_RegistersAllMetrics(t *testing.T) {
 	rec := New("v0", "abc")
-	rec.JobAssigned()
+	rec.RunnerSpawned()
 	rec.LaunchOK()
 	rec.SetTrackedInstances(3)
 
@@ -113,7 +113,7 @@ func TestRecorder_RegistersAllMetrics(t *testing.T) {
 		names[m.GetName()] = true
 	}
 	for _, want := range []string{
-		"incuse_jobs_assigned_total",
+		"incuse_runners_spawned_total",
 		"incuse_launches_total",
 		"incuse_tracked_instances",
 		"incuse_build_info",
