@@ -1,4 +1,4 @@
-.PHONY: all build test test-short lint fmt vet tidy clean
+.PHONY: all build test test-short lint fmt vet tidy clean install-remote
 
 GO := go
 GOFLAGS := -trimpath
@@ -40,3 +40,19 @@ tidy:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+# install-remote builds a linux/amd64 binary, ships it to a remote host
+# via scp, runs deploy/systemd/install.sh, and restarts the service.
+# Local-dev convenience target — production should consume the release
+# tarball, not this.
+#
+#   make install-remote HOST=rocket.lkv.netwerk.io
+INSTALL_HOST ?= $(HOST)
+INSTALL_USER ?= root
+install-remote:
+	@if [ -z "$(INSTALL_HOST)" ]; then echo "set HOST=<hostname>"; exit 1; fi
+	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS) \
+		-ldflags '$(LDFLAGS) -X main.version=$(VERSION) -X main.commit=$(COMMIT)' \
+		-o $(BIN_DIR)/incuse-linux-amd64 ./cmd/incuse
+	scp $(BIN_DIR)/incuse-linux-amd64 deploy/systemd/incuse.service deploy/systemd/incuse.example.yaml deploy/systemd/install.sh $(INSTALL_USER)@$(INSTALL_HOST):/tmp/incuse-install/
+	ssh $(INSTALL_USER)@$(INSTALL_HOST) 'cd /tmp/incuse-install && bash install.sh ./incuse-linux-amd64 && systemctl restart incuse'
