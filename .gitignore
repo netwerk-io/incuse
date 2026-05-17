@@ -1,0 +1,18 @@
+bin/
+dist/
+*.test
+*.out
+*.prof
+
+# Secrets and certs — never commit.
+*.pem
+*.key
+*.crt
+*.pat
+/etc/
+
+# Editor / OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp

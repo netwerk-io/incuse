@@ -1,0 +1,50 @@
+version: "2"
+run:
+  go: "1.25"
+linters:
+  enable:
+    - gosec
+    - misspell
+    - revive
+  settings:
+    gosec:
+      excludes:
+        - G204
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
