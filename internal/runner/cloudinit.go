@@ -81,12 +81,14 @@ func Render(spec CloudInitSpec) ([]byte, error) {
 //     runner user) and the systemd unit reads it via EnvironmentFile.
 //     Keeps it off the kernel command line and out of `ps`.
 //
-//   - The runner unit is Type=oneshot. ExecStopPost calls poweroff
-//     with the systemd `+` prefix so the command runs as root
-//     regardless of the unit's User=runner setting; without the
-//     prefix, /sbin/poweroff fails with "Interactive authentication
-//     required" and the VM survives the runner exit, defeating the
-//     ephemeral cleanup path.
+//   - The runner unit is Type=oneshot. After ExecStart returns, we
+//     sleep briefly so the actions/runner process has time to flush
+//     its final job-completion HTTP write to GitHub before the VM
+//     dies. Without the grace period a 10x-burst smoke loses ~20%
+//     of completions to GH-side mid-step state. The poweroff itself
+//     uses the systemd `+` prefix so it runs as root regardless of
+//     the unit's User=runner setting; without it, /sbin/poweroff
+//     fails with "Interactive authentication required".
 //     When run.sh exits (job done, or job-cancelled), systemd fires
 //     poweroff, the VM stops, the orchestrator sees the stopped state
 //     and deletes the instance.
@@ -135,6 +137,7 @@ write_files:
       WorkingDirectory=/opt/runner
       EnvironmentFile=/etc/incuse/jit.env
       ExecStart=/opt/runner/run.sh --jitconfig ${INCUSE_JIT}
+      ExecStopPost=+/bin/sleep 5
       ExecStopPost=+/sbin/poweroff
       RemainAfterExit=no
       StandardOutput=journal
