@@ -1,0 +1,106 @@
+# incuse — single-host GitHub Actions scale-set orchestrator on Incus.
+#
+# Place at /etc/incuse/config.yaml (chmod 0644, owned by root:incuse).
+# The companion systemd unit is at /etc/systemd/system/incuse.service.
+#
+# Anything containing a secret (PAT, App private key, Incus cert/key)
+# lives in a separate file at chmod 0600 owned by `incuse`. The
+# orchestrator's --validate preflight rejects world-readable secret
+# files at startup.
+
+github:
+  # Org URL (or repo / enterprise — anything `actions/runner` accepts).
+  config_url: https://github.com/vegardx
+
+  auth:
+    # Authentication mode. `pat` is the MVP default. `app` is wired
+    # but optional — see commented block below.
+    mode: pat
+
+    # Personal Access Token. File contents are the bare token string;
+    # trailing whitespace is trimmed. chmod 0600, owned by `incuse`.
+    pat_file: /etc/incuse/github.pat
+
+    # GitHub App auth (alternative to PAT). Uncomment + populate, set
+    # mode: app above, and remove pat_file.
+    # app:
+    #   client_id: Iv1.xxxxxxxxxxxxxxxx
+    #   private_key_file: /etc/incuse/github-app.pem
+    #   installation_id: 12345678
+
+scale_set:
+  # Name of the scale set as it will appear on GitHub. Used as the
+  # default runner-group label and as the prefix for runner names.
+  name: incuse-rocket
+
+  # Pre-created via the GitHub UI or `gh api`. `Default` is the auto-
+  # created group every org has.
+  runner_group: Default
+
+  # Hard cap on concurrent runners (Incus VMs). The orchestrator
+  # advertises min(github-desired, max_runners) on every poll so
+  # GitHub never assigns past this.
+  max_runners: 4
+
+  # Free-form labels that always apply, in addition to the auto-
+  # generated `vcpu=N` and `arch=X` labels. Job runs-on must intersect
+  # this set ∪ the auto-generated set for GitHub to route to us.
+  base_labels:
+    - incuse-rocket
+    - self-hosted
+    - linux
+
+incus:
+  # Empty url + populated socket_path = Unix-socket transport (default).
+  # Service user must be in the `incus-admin` group — the systemd unit
+  # already wires SupplementaryGroups=incus-admin.
+  url: ""
+  socket_path: /var/lib/incus/unix.socket
+
+  # Set when the orchestrator runs off-host. Files chmod 0600, owned
+  # by `incuse`.
+  # url: https://incus.example.internal:8443
+  # cert_file: /etc/incuse/incus-client.crt
+  # key_file: /etc/incuse/incus-client.key
+  # server_cert_file: /etc/incuse/incus-server.crt
+
+  # Project incuse instances live in. Pre-create with
+  # `incus project create incuse`.
+  project: incuse
+
+  # Profile incuse instances launch with. Pre-create per
+  # docs/runner-image.md (sized via per-launch overrides).
+  default_profile: incuse-runner
+
+runner:
+  # Public images.linuxcontainers.org. Override if you mirror
+  # internally.
+  image_server: https://images.linuxcontainers.org
+  image_protocol: simplestreams
+
+  # MVP: closest match to GitHub-hosted ubuntu-latest.
+  image_alias: ubuntu/24.04/cloud
+
+  # Pin the actions/runner release. Bump in lock-step with sha256.
+  runner_version: "2.328.0"
+  runner_sha256: "01a2c8a45c45ea3d7d3c1f2c77d3a2f25b27e90ce6fb8b78bcb8b9f11a1234ab"
+
+  # Path inside the runner VM where actions check out the repo.
+  work_folder: _work
+
+  # vCPU sizes the orchestrator advertises (one `vcpu=N` label per
+  # tier). A job with no `vcpu=` label gets the smallest tier.
+  vcpu_tiers: [1, 2, 4]
+
+  # Memory and disk are derived from the picked tier:
+  #   memory = vcpu * memory_per_vcpu_mib
+  #   disk   = root_disk_gib (per-instance override; profile defines
+  #            the storage pool).
+  memory_per_vcpu_mib: 4096
+  root_disk_gib: 40
+
+  # Hard timeouts. Tune the registration timeout from the manual smoke
+  # test in docs/runner-image.md (VM cold-boot is ~60-90s on rocket,
+  # plus cloud-init).
+  registration_timeout: 10m
+  max_job_duration: 6h
