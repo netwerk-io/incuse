@@ -52,6 +52,10 @@ func main() {
 	}
 
 	if *validate {
+		if err := config.Preflight(cfg); err != nil {
+			logger.Error("preflight", "path", *configPath, "error", err)
+			os.Exit(1)
+		}
 		logger.Info("config ok", "path", *configPath)
 		return
 	}
