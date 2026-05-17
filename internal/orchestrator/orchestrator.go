@@ -228,6 +228,8 @@ func (o *Orchestrator) Mint(ctx context.Context, event *ssapi.JobAssigned) error
 		return nil
 	}
 	logger := o.cfg.Logger.With(
+		"job_id", event.JobID,
+		"workflow_run_id", event.WorkflowRunID,
 		"runner_request_id", event.RunnerRequestID,
 		"request_labels", event.RequestLabels,
 	)
@@ -265,25 +267,29 @@ func (o *Orchestrator) Mint(ctx context.Context, event *ssapi.JobAssigned) error
 
 	mintedAt := o.cfg.Now()
 	req := buildLaunchRequest(launchInputs{
-		runnerName:  runnerName,
-		spec:        spec,
-		incusCfg:    o.cfg.IncusCfg,
-		runnerCfg:   o.cfg.RunnerCfg,
-		cloudInit:   cloudInit,
-		jobID:       event.RunnerRequestID,
-		scaleSetID:  o.cfg.ScaleSet.ScaleSetID(),
-		mintedAt:    mintedAt,
-		description: fmt.Sprintf("incuse runner %s (job %d)", runnerName, event.RunnerRequestID),
+		runnerName:      runnerName,
+		spec:            spec,
+		incusCfg:        o.cfg.IncusCfg,
+		runnerCfg:       o.cfg.RunnerCfg,
+		cloudInit:       cloudInit,
+		jobID:           event.JobID,
+		workflowRunID:   event.WorkflowRunID,
+		runnerRequestID: event.RunnerRequestID,
+		scaleSetID:      o.cfg.ScaleSet.ScaleSetID(),
+		mintedAt:        mintedAt,
+		description:     fmt.Sprintf("incuse runner %s (job %s)", runnerName, event.JobID),
 	})
 
 	tracked := &trackedInstance{
-		RunnerName: runnerName,
-		JobID:      event.RunnerRequestID,
-		RunnerID:   runnerRefID(ref),
-		LaunchedAt: mintedAt,
-		Spec:       spec,
-		ScaleSetID: o.cfg.ScaleSet.ScaleSetID(),
-		Status:     statusLaunching,
+		RunnerName:      runnerName,
+		JobID:           event.JobID,
+		RunnerRequestID: event.RunnerRequestID,
+		WorkflowRunID:   event.WorkflowRunID,
+		RunnerID:        runnerRefID(ref),
+		LaunchedAt:      mintedAt,
+		Spec:            spec,
+		ScaleSetID:      o.cfg.ScaleSet.ScaleSetID(),
+		Status:          statusLaunching,
 	}
 	o.tracker.add(tracked)
 	o.cfg.Metrics.JobAssigned()
@@ -309,15 +315,18 @@ func (o *Orchestrator) HandleJobStarted(_ context.Context, event *ssapi.JobStart
 		return nil
 	}
 	now := o.cfg.Now()
-	matched := o.tracker.markStartedByRequest(event.RunnerRequestID, now)
+	matched := o.tracker.markStartedByJobID(event.JobID, now)
 	if matched == "" {
-		o.cfg.Logger.Warn("job started for unknown runner request",
+		o.cfg.Logger.Warn("job started for unknown job id",
+			"job_id", event.JobID,
+			"runner_name", event.RunnerName,
 			"runner_request_id", event.RunnerRequestID,
 		)
 		return nil
 	}
 	o.cfg.Logger.Info("job started",
 		"runner_name", matched,
+		"job_id", event.JobID,
 		"runner_request_id", event.RunnerRequestID,
 	)
 	return nil
@@ -330,16 +339,20 @@ func (o *Orchestrator) HandleJobCompleted(ctx context.Context, event *ssapi.JobC
 	if event == nil {
 		return nil
 	}
-	matched := o.tracker.getByRequest(event.RunnerRequestID)
+	matched := o.tracker.getByJobID(event.JobID)
 	if matched == nil {
-		o.cfg.Logger.Warn("job completed for unknown runner request",
+		o.cfg.Logger.Warn("job completed for unknown job id",
+			"job_id", event.JobID,
+			"runner_name", event.RunnerName,
 			"runner_request_id", event.RunnerRequestID,
 		)
 		return nil
 	}
 	o.cfg.Logger.Info("job completed",
 		"runner_name", matched.RunnerName,
+		"job_id", event.JobID,
 		"runner_request_id", event.RunnerRequestID,
+		"result", event.Result,
 	)
 	o.cfg.Metrics.Reap("job_completed")
 	o.terminateInstance(ctx, matched.RunnerName, "job completed")
@@ -380,6 +393,18 @@ func (o *Orchestrator) dispatchLaunch(ctx context.Context, req incus.LaunchReque
 		}
 		defer func() { <-o.launchSem }()
 
+		// Bail early if termination was requested while we waited on
+		// the semaphore. Skips a wasted CreateInstance round-trip.
+		if o.tracker.terminationPending(tracked.RunnerName) {
+			logger.Info("aborting launch; termination requested before create",
+				"runner_name", tracked.RunnerName,
+			)
+			o.tracker.remove(tracked.RunnerName)
+			o.cfg.Metrics.SetTrackedInstances(o.tracker.size())
+			o.removeRunnerByID(ctx, tracked.RunnerID, tracked.RunnerName, "termination during launch")
+			return
+		}
+
 		start := o.cfg.Now()
 		inst, err := o.cfg.IncusClient.Launch(ctx, req)
 		o.cfg.Metrics.LaunchDuration(o.cfg.Now().Sub(start).Seconds())
@@ -396,7 +421,15 @@ func (o *Orchestrator) dispatchLaunch(ctx context.Context, req incus.LaunchReque
 		}
 
 		o.cfg.Metrics.LaunchOK()
-		o.tracker.markLaunched(tracked.RunnerName, o.cfg.Now())
+		terminationRequested, _ := o.tracker.markLaunched(tracked.RunnerName, o.cfg.Now())
+		if terminationRequested {
+			logger.Info("launch ok but termination requested mid-flight; tearing down",
+				"runner_name", tracked.RunnerName,
+			)
+			o.terminateInstance(ctx, tracked.RunnerName, "deferred from launching")
+			o.removeRunnerByID(ctx, tracked.RunnerID, tracked.RunnerName, "termination during launch")
+			return
+		}
 		logger.Info("launch ok",
 			"runner_name", tracked.RunnerName,
 			"status", inst.Status,
@@ -407,7 +440,21 @@ func (o *Orchestrator) dispatchLaunch(ctx context.Context, req incus.LaunchReque
 // terminateInstance stops + deletes a managed instance and removes it
 // from the tracker. Errors are logged + swallowed; the reaper will
 // retry on the next sweep.
+//
+// Termination during launch is deferred: Incus refuses
+// delete-during-create, so if the entry is still in statusLaunching
+// we set TerminationPending and let the launch goroutine handle the
+// teardown after CreateInstance returns. The runner ID stays in the
+// tracker entry so the launch goroutine can also clean up the
+// GitHub-side registration.
 func (o *Orchestrator) terminateInstance(ctx context.Context, runnerName, reason string) {
+	if status, ok := o.tracker.markForTermination(runnerName); ok && status == statusLaunching {
+		o.cfg.Logger.Info("deferring termination until launch completes",
+			"runner_name", runnerName,
+			"reason", reason,
+		)
+		return
+	}
 	if inst, ok := o.tracker.get(runnerName); ok {
 		o.cfg.Metrics.RunnerLifetime(o.cfg.Now().Sub(inst.LaunchedAt).Seconds())
 	}
