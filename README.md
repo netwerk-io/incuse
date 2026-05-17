@@ -29,6 +29,18 @@ off-host deployments.
 
 Early. See the project plan for the active phase.
 
+## Install
+
+On a host running Incus, with the `incuse` system user pre-created (or letting `install.sh` create it):
+
+```bash
+bash deploy/systemd/install.sh ./bin/incuse
+# edit /etc/incuse/config.yaml, drop a chmod-600 PAT at /etc/incuse/github.pat
+systemctl enable --now incuse
+```
+
+Full walkthrough: [`docs/deployment.md`](docs/deployment.md). Day-2 ops: [`docs/operations.md`](docs/operations.md).
+
 ## Build
 
 ```bash
