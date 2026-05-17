@@ -600,3 +600,136 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("Run did not stop on cancel")
 	}
 }
+
+// fakeMetrics records every Metrics* call so tests can assert that
+// the orchestrator drives the hook the way operators expect.
+type fakeMetrics struct {
+	mu              sync.Mutex
+	jobAssigned     int
+	launchOK        int
+	launchFail      int
+	launchDurations []float64
+	runnerLifetimes []float64
+	reapReasons     map[string]int
+	trackedSetTo    []int
+}
+
+func newFakeMetrics() *fakeMetrics { return &fakeMetrics{reapReasons: map[string]int{}} }
+
+func (f *fakeMetrics) JobAssigned() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobAssigned++
+}
+func (f *fakeMetrics) LaunchOK() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchOK++
+}
+func (f *fakeMetrics) LaunchFail() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchFail++
+}
+func (f *fakeMetrics) LaunchDuration(s float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchDurations = append(f.launchDurations, s)
+}
+func (f *fakeMetrics) RunnerLifetime(s float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runnerLifetimes = append(f.runnerLifetimes, s)
+}
+func (f *fakeMetrics) Reap(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reapReasons[reason]++
+}
+func (f *fakeMetrics) SetTrackedInstances(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trackedSetTo = append(f.trackedSetTo, n)
+}
+
+func (f *fakeMetrics) snapshot() (jobAssigned, launchOK, launchFail int, reapReasons map[string]int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rr := make(map[string]int, len(f.reapReasons))
+	for k, v := range f.reapReasons {
+		rr[k] = v
+	}
+	return f.jobAssigned, f.launchOK, f.launchFail, rr
+}
+
+func TestMetrics_HappyPath_AssignedThenLaunchOKThenJobCompleted(t *testing.T) {
+	fm := newFakeMetrics()
+	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
+	ctx := t.Context()
+
+	if err := o.Mint(ctx, &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	waitForLaunches(t, fi, 1)
+	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+		t.Fatalf("HandleJobCompleted: %v", err)
+	}
+
+	assigned, ok, fail, reasons := fm.snapshot()
+	if assigned != 1 {
+		t.Errorf("jobAssigned: want 1, got %d", assigned)
+	}
+	if ok != 1 || fail != 0 {
+		t.Errorf("launches: want ok=1 fail=0, got ok=%d fail=%d", ok, fail)
+	}
+	if reasons["job_completed"] != 1 {
+		t.Errorf("reap reasons: want job_completed=1, got %v", reasons)
+	}
+
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if len(fm.launchDurations) != 1 {
+		t.Errorf("launch durations: want 1 sample, got %d", len(fm.launchDurations))
+	}
+	if len(fm.runnerLifetimes) != 1 {
+		t.Errorf("runner lifetimes: want 1 sample, got %d", len(fm.runnerLifetimes))
+	}
+}
+
+func TestMetrics_LaunchFailureBumpsLaunchFail(t *testing.T) {
+	fm := newFakeMetrics()
+	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
+	fi.launchErr = errors.New("boom")
+	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	waitForLaunches(t, fi, 1)
+
+	_, ok, fail, _ := fm.snapshot()
+	if ok != 0 || fail != 1 {
+		t.Errorf("launches: want ok=0 fail=1, got ok=%d fail=%d", ok, fail)
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if len(fm.launchDurations) != 1 {
+		t.Errorf("launch durations: want 1 sample even on failure, got %d", len(fm.launchDurations))
+	}
+}
+
+func TestMetrics_ReapReasonsRoute(t *testing.T) {
+	fm := newFakeMetrics()
+	o, _, _, clk := newTestOrchestrator(t, func(c *Config) {
+		c.Metrics = fm
+		c.RunnerCfg.RegistrationTimeout = time.Minute
+	})
+	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{RunnerRequestID: 1}}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	clk.advance(2 * time.Minute)
+	o.reapOnce(t.Context())
+
+	_, _, _, reasons := fm.snapshot()
+	if reasons["registration_timeout"] != 1 {
+		t.Errorf("reap reasons: want registration_timeout=1, got %v", reasons)
+	}
+}

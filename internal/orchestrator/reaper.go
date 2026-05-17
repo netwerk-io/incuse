@@ -46,6 +46,7 @@ func (o *Orchestrator) reapTracked(ctx context.Context, inst trackedInstance, no
 				"runner_request_id", inst.JobID,
 				"age", now.Sub(inst.LaunchedAt),
 			)
+			o.cfg.Metrics.Reap("registration_timeout")
 			o.terminateInstance(ctx, inst.RunnerName, "registration timeout")
 			o.removeRunnerByID(ctx, inst.RunnerID, inst.RunnerName, "registration timeout")
 		}
@@ -60,6 +61,7 @@ func (o *Orchestrator) reapTracked(ctx context.Context, inst trackedInstance, no
 				"runner_request_id", inst.JobID,
 				"running_for", now.Sub(inst.RunnerStartedAt),
 			)
+			o.cfg.Metrics.Reap("max_job_duration")
 			o.terminateInstance(ctx, inst.RunnerName, "max job duration")
 			o.removeRunnerByID(ctx, inst.RunnerID, inst.RunnerName, "max job duration")
 		}
@@ -89,6 +91,7 @@ func (o *Orchestrator) driftSweep(ctx context.Context) {
 			"runner_name", inst.Name,
 			"status", inst.Status,
 		)
+		o.cfg.Metrics.Reap("drift_sweep")
 		// We don't know the GitHub runner ID for orphans (we lost the
 		// in-memory state on restart). The runner registration on
 		// GitHub will eventually expire on its own; the cost is a few

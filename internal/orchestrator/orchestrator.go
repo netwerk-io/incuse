@@ -39,6 +39,30 @@ import (
 	"github.com/vegardx/incuse/internal/runner"
 )
 
+// MetricsHook is the slice of *observability.Recorder the
+// orchestrator drives. Pulled out as a package-local interface so
+// tests don't have to spin up a Prometheus registry, and so a
+// no-metrics build path is a one-liner default.
+type MetricsHook interface {
+	JobAssigned()
+	LaunchOK()
+	LaunchFail()
+	LaunchDuration(seconds float64)
+	RunnerLifetime(seconds float64)
+	Reap(reason string)
+	SetTrackedInstances(n int)
+}
+
+type noopMetrics struct{}
+
+func (noopMetrics) JobAssigned()              {}
+func (noopMetrics) LaunchOK()                 {}
+func (noopMetrics) LaunchFail()               {}
+func (noopMetrics) LaunchDuration(_ float64)  {}
+func (noopMetrics) RunnerLifetime(_ float64)  {}
+func (noopMetrics) Reap(_ string)             {}
+func (noopMetrics) SetTrackedInstances(_ int) {}
+
 // IncusClient is the slice of internal/incus.Client the orchestrator
 // drives. Pulled out as a package-local interface so tests can wire a
 // fake without depending on the upstream Incus REST shapes.
@@ -101,6 +125,10 @@ type Config struct {
 	// NameSuffix returns a runner-name suffix; defaults to a random
 	// 8-byte hex. Test override gives deterministic instance names.
 	NameSuffix func() string
+
+	// Metrics is optional. nil installs a no-op hook so the
+	// orchestrator never has to nil-check.
+	Metrics MetricsHook
 }
 
 // Orchestrator is the long-lived process glue. Construct via New.
@@ -156,6 +184,9 @@ func New(cfg Config) (*Orchestrator, error) {
 	}
 	if cfg.NameSuffix == nil {
 		cfg.NameSuffix = randomNameSuffix
+	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noopMetrics{}
 	}
 
 	return &Orchestrator{
@@ -255,6 +286,8 @@ func (o *Orchestrator) Mint(ctx context.Context, event *ssapi.JobAssigned) error
 		Status:     statusLaunching,
 	}
 	o.tracker.add(tracked)
+	o.cfg.Metrics.JobAssigned()
+	o.cfg.Metrics.SetTrackedInstances(o.tracker.size())
 
 	logger.Info("launching runner",
 		"runner_name", runnerName,
@@ -308,6 +341,7 @@ func (o *Orchestrator) HandleJobCompleted(ctx context.Context, event *ssapi.JobC
 		"runner_name", matched.RunnerName,
 		"runner_request_id", event.RunnerRequestID,
 	)
+	o.cfg.Metrics.Reap("job_completed")
 	o.terminateInstance(ctx, matched.RunnerName, "job completed")
 	return nil
 }
@@ -341,21 +375,27 @@ func (o *Orchestrator) dispatchLaunch(ctx context.Context, req incus.LaunchReque
 		case o.launchSem <- struct{}{}:
 		case <-ctx.Done():
 			o.tracker.remove(tracked.RunnerName)
+			o.cfg.Metrics.SetTrackedInstances(o.tracker.size())
 			return
 		}
 		defer func() { <-o.launchSem }()
 
+		start := o.cfg.Now()
 		inst, err := o.cfg.IncusClient.Launch(ctx, req)
+		o.cfg.Metrics.LaunchDuration(o.cfg.Now().Sub(start).Seconds())
 		if err != nil {
+			o.cfg.Metrics.LaunchFail()
 			logger.Error("launch failed",
 				"runner_name", tracked.RunnerName,
 				"error", err,
 			)
 			o.tracker.remove(tracked.RunnerName)
+			o.cfg.Metrics.SetTrackedInstances(o.tracker.size())
 			o.removeRunnerByID(ctx, tracked.RunnerID, tracked.RunnerName, "launch failed")
 			return
 		}
 
+		o.cfg.Metrics.LaunchOK()
 		o.tracker.markLaunched(tracked.RunnerName, o.cfg.Now())
 		logger.Info("launch ok",
 			"runner_name", tracked.RunnerName,
@@ -368,7 +408,11 @@ func (o *Orchestrator) dispatchLaunch(ctx context.Context, req incus.LaunchReque
 // from the tracker. Errors are logged + swallowed; the reaper will
 // retry on the next sweep.
 func (o *Orchestrator) terminateInstance(ctx context.Context, runnerName, reason string) {
+	if inst, ok := o.tracker.get(runnerName); ok {
+		o.cfg.Metrics.RunnerLifetime(o.cfg.Now().Sub(inst.LaunchedAt).Seconds())
+	}
 	o.tracker.remove(runnerName)
+	o.cfg.Metrics.SetTrackedInstances(o.tracker.size())
 	if err := o.cfg.IncusClient.Stop(ctx, runnerName); err != nil {
 		o.cfg.Logger.Warn("stop failed (will retry via reaper drift sweep)",
 			"runner_name", runnerName,
