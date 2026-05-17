@@ -23,20 +23,11 @@ import (
 	"github.com/netwerk-io/incuse/internal/config"
 )
 
-// JITMinter mints a JIT runner configuration for a JobAssigned event.
-// Invoked by the wrapping listener.Client decorator before the upstream
-// library observes the message. Implementations pick the right runner
-// shape from event.RequestLabels via config.ResolveRunnerSpec, call
-// ScaleSet.GenerateJITConfig, render cloud-init, and hand a populated
-// LaunchRequest to the orchestrator.
-//
-// Errors are logged but not returned to the listener — failing a mint
-// must not poison the message queue, because the upstream library will
-// call DeleteMessage regardless. GitHub's re-queue mechanics are the
-// retry path.
-type JITMinter interface {
-	Mint(ctx context.Context, event *ssapi.JobAssigned) error
-}
+// (JITMinter was an interface for the per-JobAssigned mint pattern
+// we copied from kindling. Removed when we restructured to the
+// upstream Scaler pattern; the listener no longer needs anything
+// from us at JobAssigned time, and HandleDesiredRunnerCount drives
+// the pool.)
 
 // Options configures a new ScaleSet.
 type Options struct {
@@ -310,21 +301,17 @@ func openSessionWithRetry(
 	}
 }
 
-// Run starts the listener loop. Blocks until ctx is cancelled or the
-// upstream library returns an unrecoverable error. minter is invoked
-// synchronously for each JobAssigned the listener observes.
-func (s *ScaleSet) Run(ctx context.Context, scaler sslistener.Scaler, minter JITMinter) error {
+// Run starts the listener loop. Blocks until ctx is cancelled or
+// the upstream library returns an unrecoverable error. The Scaler
+// owns the runner pool: HandleDesiredRunnerCount creates idle
+// runners, HandleJobStarted/HandleJobCompleted track them through
+// their lifecycle. We do NOT intercept JobAssigned here —
+// GenerateJitRunnerConfig only takes a runner Name, so a JIT mint
+// can't actually bind to a specific JobAssigned, and trying to mint
+// per-JobAssigned races with GitHub's broker dispatch.
+func (s *ScaleSet) Run(ctx context.Context, scaler sslistener.Scaler) error {
 	if s.msgClient == nil {
 		return errors.New("Bootstrap must succeed before Run")
-	}
-	if minter == nil {
-		return errors.New("minter is required")
-	}
-
-	wrapped := &mintingClient{
-		inner:  s.msgClient,
-		minter: minter,
-		logger: s.opts.Logger,
 	}
 
 	var lopts []sslistener.Option
@@ -332,7 +319,7 @@ func (s *ScaleSet) Run(ctx context.Context, scaler sslistener.Scaler, minter JIT
 		lopts = append(lopts, sslistener.WithMetricsRecorder(s.opts.MetricsRecorder))
 	}
 
-	l, err := sslistener.New(wrapped, sslistener.Config{
+	l, err := sslistener.New(s.msgClient, sslistener.Config{
 		ScaleSetID: s.scaleSetID,
 		MaxRunners: s.opts.Spec.MaxRunners,
 		Logger:     s.opts.Logger,

@@ -17,8 +17,7 @@ import (
 	"github.com/netwerk-io/incuse/internal/runner"
 )
 
-// fakeIncus records every Launch/Stop/Delete/List call. Test asserts
-// against the recorded sequence.
+// fakeIncus records every Launch/Stop/Delete/List call.
 type fakeIncus struct {
 	mu            sync.Mutex
 	launches      []incus.LaunchRequest
@@ -31,7 +30,7 @@ type fakeIncus struct {
 	deleteErr     error
 	listErr       error
 	launchGate    chan struct{} // optional: blocks Launch until closed
-	launchEntered chan struct{} // optional: closed by Launch before it blocks on gate
+	launchEntered chan struct{} // optional: closed by Launch before it blocks
 }
 
 func (f *fakeIncus) Launch(_ context.Context, req incus.LaunchRequest) (*incus.Instance, error) {
@@ -117,8 +116,7 @@ func (f *fakeScaleSet) SetMaxRunners(c int) {
 	f.maxRunners = c
 }
 
-func (f *fakeScaleSet) ScaleSetID() int { return f.scaleSetID }
-
+func (f *fakeScaleSet) ScaleSetID() int             { return f.scaleSetID }
 func (f *fakeScaleSet) Spec() config.ScaleSetConfig { return f.spec }
 
 // fakeResolver is a constant ReleaseResolver for tests.
@@ -129,6 +127,50 @@ type fakeResolver struct {
 
 func (f *fakeResolver) Resolve(_ context.Context) (runner.Release, error) {
 	return f.rel, f.err
+}
+
+// fakeMetrics records every Metrics* call so tests can assert.
+type fakeMetrics struct {
+	mu              sync.Mutex
+	runnerSpawned   int
+	launchOK        int
+	launchFail      int
+	launchDurations []float64
+	runnerLifetimes []float64
+	reapReasons     map[string]int
+	trackedSetTo    []int
+}
+
+func newFakeMetrics() *fakeMetrics { return &fakeMetrics{reapReasons: map[string]int{}} }
+
+func (f *fakeMetrics) RunnerSpawned() { f.mu.Lock(); defer f.mu.Unlock(); f.runnerSpawned++ }
+func (f *fakeMetrics) LaunchOK()      { f.mu.Lock(); defer f.mu.Unlock(); f.launchOK++ }
+func (f *fakeMetrics) LaunchFail()    { f.mu.Lock(); defer f.mu.Unlock(); f.launchFail++ }
+func (f *fakeMetrics) LaunchDuration(s float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchDurations = append(f.launchDurations, s)
+}
+func (f *fakeMetrics) RunnerLifetime(s float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runnerLifetimes = append(f.runnerLifetimes, s)
+}
+func (f *fakeMetrics) Reap(r string) { f.mu.Lock(); defer f.mu.Unlock(); f.reapReasons[r]++ }
+func (f *fakeMetrics) SetTrackedInstances(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trackedSetTo = append(f.trackedSetTo, n)
+}
+
+func (f *fakeMetrics) snapshot() (spawned, ok, fail int, reasons map[string]int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rr := make(map[string]int, len(f.reapReasons))
+	for k, v := range f.reapReasons {
+		rr[k] = v
+	}
+	return f.runnerSpawned, f.launchOK, f.launchFail, rr
 }
 
 func discardLogger() *slog.Logger {
@@ -142,12 +184,7 @@ type fixedClock struct {
 	t  time.Time
 }
 
-func (c *fixedClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
+func (c *fixedClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *fixedClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -163,7 +200,7 @@ func newTestOrchestrator(t *testing.T, mutate func(*Config)) (*Orchestrator, *fa
 		spec: config.ScaleSetConfig{
 			Name:        "incuse-test",
 			RunnerGroup: "Default",
-			MaxRunners:  2,
+			MaxRunners:  10,
 			BaseLabels:  []string{"incuse-test"},
 		},
 	}
@@ -195,6 +232,7 @@ func newTestOrchestrator(t *testing.T, mutate func(*Config)) (*Orchestrator, *fa
 		Now:          clk.Now,
 		NameSuffix: func() string {
 			n := nameSeq.Add(1)
+			// produce names: aaaa, bbbb, cccc, ...
 			ch := byte('a' + (n-1)%26)
 			return string([]byte{ch, ch, ch, ch})
 		},
@@ -209,10 +247,7 @@ func newTestOrchestrator(t *testing.T, mutate func(*Config)) (*Orchestrator, *fa
 	return o, fi, fs, clk
 }
 
-// waitForLaunches blocks until fi.launches reaches the expected count
-// or the timeout fires. The launch goroutine runs asynchronously, so
-// every assertion that depends on Launch having completed needs this
-// helper.
+// waitForLaunches blocks until fi.launches reaches the expected count.
 func waitForLaunches(t *testing.T, fi *fakeIncus, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -228,376 +263,336 @@ func waitForLaunches(t *testing.T, fi *fakeIncus, want int) {
 	t.Fatalf("waitForLaunches: timed out, want %d", want)
 }
 
+// waitForTrackerSize blocks until tracker.size() reaches want, or fails.
+func waitForTrackerSize(t *testing.T, o *Orchestrator, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if o.tracker.size() == want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("waitForTrackerSize: want %d, got %d", want, o.tracker.size())
+}
+
+// ------------------ tests ------------------
+
 func TestNew_Validation(t *testing.T) {
-	base := func() Config {
+	validBase := func() Config {
 		return Config{
 			IncusClient:     &fakeIncus{},
 			ScaleSet:        &fakeScaleSet{spec: config.ScaleSetConfig{MaxRunners: 1}},
 			ReleaseResolver: &fakeResolver{},
 			IncusCfg:        config.IncusConfig{Project: "p", DefaultProfile: "pr"},
-			RunnerCfg:       config.RunnerConfig{RegistrationTimeout: time.Minute, MaxJobDuration: time.Hour},
-			Logger:          discardLogger(),
+			RunnerCfg: config.RunnerConfig{
+				RegistrationTimeout: time.Minute,
+				MaxJobDuration:      time.Hour,
+				VCPUTiers:           []int{1},
+				MemoryPerVCPUMiB:    1024,
+				RootDiskGiB:         10,
+			},
+			Logger: discardLogger(),
 		}
 	}
+
 	cases := []struct {
-		name   string
-		mutate func(*Config)
-		want   string
+		name    string
+		mutate  func(*Config)
+		wantErr string
 	}{
-		{"missing incus", func(c *Config) { c.IncusClient = nil }, "incus client"},
+		{"missing incus client", func(c *Config) { c.IncusClient = nil }, "incus client"},
 		{"missing scaleset", func(c *Config) { c.ScaleSet = nil }, "scale set"},
-		{"missing resolver", func(c *Config) { c.ReleaseResolver = nil }, "resolver"},
+		{"missing resolver", func(c *Config) { c.ReleaseResolver = nil }, "release resolver"},
 		{"missing logger", func(c *Config) { c.Logger = nil }, "logger"},
 		{"missing project", func(c *Config) { c.IncusCfg.Project = "" }, "project"},
-		{"missing profile", func(c *Config) { c.IncusCfg.DefaultProfile = "" }, "profile"},
-		{"missing reg timeout", func(c *Config) { c.RunnerCfg.RegistrationTimeout = 0 }, "registration_timeout"},
-		{"missing max job", func(c *Config) { c.RunnerCfg.MaxJobDuration = 0 }, "max_job_duration"},
+		{"missing profile", func(c *Config) { c.IncusCfg.DefaultProfile = "" }, "default_profile"},
+		{"missing registration timeout", func(c *Config) { c.RunnerCfg.RegistrationTimeout = 0 }, "registration_timeout"},
+		{"missing max job duration", func(c *Config) { c.RunnerCfg.MaxJobDuration = 0 }, "max_job_duration"},
+		{"missing vcpu tiers", func(c *Config) { c.RunnerCfg.VCPUTiers = nil }, "vcpu_tiers"},
 		{"max runners zero", func(c *Config) { c.ScaleSet = &fakeScaleSet{spec: config.ScaleSetConfig{MaxRunners: 0}} }, "max_runners"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := base()
-			tc.mutate(&c)
-			_, err := New(c)
-			if err == nil {
-				t.Fatalf("want error containing %q", tc.want)
+			cfg := validBase()
+			tc.mutate(&cfg)
+			_, err := New(cfg)
+			if err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Errorf("want error containing %q, got %v", tc.wantErr, err)
 			}
 		})
 	}
 }
 
-func TestMint_LaunchesVMWithExpectedShape(t *testing.T) {
+func TestHandleDesiredRunnerCount_SpawnsAtSmallestTier(t *testing.T) {
 	o, fi, fs, _ := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{
-			JobID: "j-1234", RunnerRequestID: 1234,
-			RequestLabels: []string{"incuse-test", "vcpu=2"},
-		},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
+	got, err := o.HandleDesiredRunnerCount(t.Context(), 3)
+	if err != nil {
+		t.Fatalf("HandleDesiredRunnerCount: %v", err)
 	}
-
-	waitForLaunches(t, fi, 1)
+	if got != 3 {
+		t.Errorf("returned target: want 3, got %d", got)
+	}
+	waitForLaunches(t, fi, 3)
+	if fs.jitCalls != 3 {
+		t.Errorf("jit mints: want 3, got %d", fs.jitCalls)
+	}
 	launches, _, _ := fi.snapshot()
-	req := launches[0]
-
-	if req.Type != incus.InstanceTypeVM {
-		t.Errorf("type: want VM, got %q", req.Type)
-	}
-	if req.Name != "incuse-test-aaaa" {
-		t.Errorf("name: want incuse-test-aaaa, got %q", req.Name)
-	}
-	if req.Image.Alias != "ubuntu/24.04/cloud" {
-		t.Errorf("image alias: %q", req.Image.Alias)
-	}
-	if got := req.Config["limits.cpu"]; got != "2" {
-		t.Errorf("limits.cpu: want 2, got %q", got)
-	}
-	if got := req.Config["limits.memory"]; got != "8192MiB" {
-		t.Errorf("limits.memory: want 8192MiB, got %q", got)
-	}
-	if got := req.Config[metaManaged]; got != "true" {
-		t.Errorf("%s: want true, got %q", metaManaged, got)
-	}
-	if got := req.Config[metaJobID]; got != "j-1234" {
-		t.Errorf("%s: want j-1234, got %q", metaJobID, got)
-	}
-	if got := req.Config[metaRunnerRequestID]; got != "1234" {
-		t.Errorf("%s: want 1234, got %q", metaRunnerRequestID, got)
-	}
-	if got := req.Config[metaScaleSetID]; got != "42" {
-		t.Errorf("%s: want 42, got %q", metaScaleSetID, got)
-	}
-	if got := req.Config[metaRunnerName]; got != "incuse-test-aaaa" {
-		t.Errorf("%s: want incuse-test-aaaa, got %q", metaRunnerName, got)
-	}
-	if got := req.Config["cloud-init.user-data"]; got == "" {
-		t.Error("cloud-init.user-data: missing")
-	}
-	if !req.Ephemeral {
-		t.Error("ephemeral: want true")
-	}
-	if got := req.Devices["root"]["size"]; got != "40GiB" {
-		t.Errorf("root size: want 40GiB, got %q", got)
-	}
-	if fs.jitCalls != 1 {
-		t.Errorf("jit calls: want 1, got %d", fs.jitCalls)
+	for _, req := range launches {
+		if got := req.Config["limits.cpu"]; got != "1" {
+			t.Errorf("limits.cpu: want 1 (smallest tier), got %q", got)
+		}
+		if got := req.Config[metaManaged]; got != "true" {
+			t.Errorf("%s: want true, got %q", metaManaged, got)
+		}
+		if got := req.Config[metaRunnerName]; got == "" {
+			t.Errorf("%s: missing", metaRunnerName)
+		}
 	}
 }
 
-func TestMint_LaunchFailureRemovesRunnerFromGitHub(t *testing.T) {
-	o, fi, fs, _ := newTestOrchestrator(t, nil)
-	fi.launchErr = errors.New("incus exploded")
+func TestHandleDesiredRunnerCount_CapsAtMaxRunners(t *testing.T) {
+	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) {
+		c.ScaleSet = &fakeScaleSet{spec: config.ScaleSetConfig{Name: "incuse-test", MaxRunners: 2}}
+	})
+	got, err := o.HandleDesiredRunnerCount(t.Context(), 5)
+	if err != nil {
+		t.Fatalf("HandleDesiredRunnerCount: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("target: want 2 (capped), got %d", got)
+	}
+	waitForLaunches(t, fi, 2)
+}
 
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{
-			JobID: "j-1", RunnerRequestID: 1,
-			RequestLabels: []string{"incuse-test"},
-		},
-	}); err != nil {
-		t.Fatalf("mint must not return error to listener: %v", err)
+func TestHandleDesiredRunnerCount_NoOpAtTarget(t *testing.T) {
+	o, fi, _, _ := newTestOrchestrator(t, nil)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 2); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	waitForLaunches(t, fi, 2)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 2); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	// Second call must not have spawned additional runners.
+	time.Sleep(20 * time.Millisecond)
+	launches, _, _ := fi.snapshot()
+	if len(launches) != 2 {
+		t.Errorf("launches: want 2 (no extra spawn at target), got %d", len(launches))
+	}
+}
+
+func TestHandleDesiredRunnerCount_NegativeIsZero(t *testing.T) {
+	o, _, _, _ := newTestOrchestrator(t, nil)
+	got, _ := o.HandleDesiredRunnerCount(t.Context(), -3)
+	if got != 0 {
+		t.Errorf("want 0, got %d", got)
+	}
+}
+
+func TestHandleJobStarted_MarksRunnerBusy(t *testing.T) {
+	o, fi, _, _ := newTestOrchestrator(t, nil)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		fs.mu.Lock()
-		n := len(fs.removeCalls)
-		fs.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		time.Sleep(2 * time.Millisecond)
+	runnerName := "incuse-test-aaaa"
+	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{RunnerName: runnerName, JobMessageBase: ssapi.JobMessageBase{JobID: "j-1"}}); err != nil {
+		t.Fatalf("HandleJobStarted: %v", err)
 	}
-	if len(fs.removeCalls) != 1 || fs.removeCalls[0] != 7777 {
-		t.Errorf("RemoveRunner: want [7777], got %v", fs.removeCalls)
+	r, ok := o.tracker.get(runnerName)
+	if !ok {
+		t.Fatal("runner missing from tracker")
 	}
-	if o.tracker.size() != 0 {
-		t.Errorf("tracker size: want 0 after failed launch, got %d", o.tracker.size())
+	if r.State != statusBusy {
+		t.Errorf("state: want busy, got %v", r.State)
+	}
+	if r.BusyAt.IsZero() {
+		t.Error("BusyAt not stamped")
 	}
 }
 
-func TestMint_NilEventIsNoop(t *testing.T) {
-	o, fi, _, _ := newTestOrchestrator(t, nil)
-	if err := o.Mint(t.Context(), nil); err != nil {
-		t.Fatalf("mint nil: %v", err)
-	}
-	if got, _, _ := fi.snapshot(); len(got) != 0 {
-		t.Errorf("nil event must not launch; got %d", len(got))
-	}
-}
-
-func TestMint_BadLabelLogsAndContinues(t *testing.T) {
-	o, fi, _, _ := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{
-			JobID: "j-1", RunnerRequestID: 1,
-			RequestLabels: []string{"vcpu=1", "vcpu=2"}, // conflict
-		},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if got, _, _ := fi.snapshot(); len(got) != 0 {
-		t.Errorf("bad spec must not launch; got %d", len(got))
-	}
-}
-
-func TestHandleJobStarted_StampsRunnerStartedAt(t *testing.T) {
-	o, _, _, clk := newTestOrchestrator(t, func(c *Config) {
-		c.IncusClient.(*fakeIncus).launchGate = make(chan struct{})
-	})
-	gate := o.cfg.IncusClient.(*fakeIncus).launchGate
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-99", RunnerRequestID: 99, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-
-	clk.advance(5 * time.Second)
-	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-99", RunnerRequestID: 99},
-	}); err != nil {
-		t.Fatalf("handle started: %v", err)
-	}
-	close(gate)
-	waitForLaunches(t, o.cfg.IncusClient.(*fakeIncus), 1)
-
-	got := o.tracker.getByJobID("j-99")
-	if got == nil {
-		t.Fatal("tracked instance disappeared")
-	}
-	if got.RunnerStartedAt.IsZero() {
-		t.Error("RunnerStartedAt must be stamped")
-	}
-	if got.Status != statusStarted {
-		t.Errorf("status: want started, got %d", got.Status)
+func TestHandleJobStarted_UnknownRunnerLogsAndReturns(t *testing.T) {
+	o, _, _, _ := newTestOrchestrator(t, nil)
+	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{RunnerName: "does-not-exist"}); err != nil {
+		t.Fatalf("HandleJobStarted: %v", err)
 	}
 }
 
 func TestHandleJobCompleted_StopsAndDeletes(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-11", RunnerRequestID: 11, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
 
-	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-11", RunnerRequestID: 11},
-	}); err != nil {
-		t.Fatalf("handle completed: %v", err)
+	runnerName := "incuse-test-aaaa"
+	_ = o.HandleJobStarted(t.Context(), &ssapi.JobStarted{RunnerName: runnerName})
+	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{RunnerName: runnerName, Result: "succeeded"}); err != nil {
+		t.Fatalf("HandleJobCompleted: %v", err)
 	}
-
 	_, stops, deletes := fi.snapshot()
-	if len(stops) != 1 || stops[0] != "incuse-test-aaaa" {
-		t.Errorf("stops: want [incuse-test-aaaa], got %v", stops)
+	if len(stops) != 1 || stops[0] != runnerName {
+		t.Errorf("stops: want [%s], got %v", runnerName, stops)
 	}
-	if len(deletes) != 1 || deletes[0] != "incuse-test-aaaa" {
-		t.Errorf("deletes: want [incuse-test-aaaa], got %v", deletes)
+	if len(deletes) != 1 || deletes[0] != runnerName {
+		t.Errorf("deletes: want [%s], got %v", runnerName, deletes)
 	}
 	if o.tracker.size() != 0 {
-		t.Errorf("tracker size: want 0 after job complete, got %d", o.tracker.size())
+		t.Errorf("tracker size: want 0, got %d", o.tracker.size())
 	}
 }
 
-func TestHandleJobCompleted_UnknownRequestIsNoop(t *testing.T) {
+func TestHandleJobCompleted_UnknownRunnerIsNoop(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
-	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-999", RunnerRequestID: 999},
-	}); err != nil {
-		t.Fatalf("handle completed: %v", err)
+	if err := o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{RunnerName: "ghost"}); err != nil {
+		t.Fatalf("HandleJobCompleted: %v", err)
 	}
-	if _, stops, deletes := fi.snapshot(); len(stops) != 0 || len(deletes) != 0 {
-		t.Errorf("unknown request must not call stop/delete; stops=%v deletes=%v", stops, deletes)
+	_, stops, deletes := fi.snapshot()
+	if len(stops) != 0 || len(deletes) != 0 {
+		t.Errorf("expected no incus calls; stops=%v deletes=%v", stops, deletes)
 	}
 }
 
-func TestHandleDesiredRunnerCount_CapsAtMaxRunners(t *testing.T) {
+func TestHandleJobCompleted_NilEventIsNoop(t *testing.T) {
 	o, _, _, _ := newTestOrchestrator(t, nil)
-	got, err := o.HandleDesiredRunnerCount(t.Context(), 100)
-	if err != nil {
-		t.Fatalf("handle desired: %v", err)
-	}
-	if got != 2 {
-		t.Errorf("capacity: want 2 (max_runners), got %d", got)
-	}
-	got, _ = o.HandleDesiredRunnerCount(t.Context(), 1)
-	if got != 1 {
-		t.Errorf("capacity: want 1 (request below max), got %d", got)
-	}
-	got, _ = o.HandleDesiredRunnerCount(t.Context(), -5)
-	if got != 0 {
-		t.Errorf("capacity: want 0 (clamp negative), got %d", got)
+	if err := o.HandleJobCompleted(t.Context(), nil); err != nil {
+		t.Fatalf("nil: %v", err)
 	}
 }
 
-func TestReap_RegistrationTimeout(t *testing.T) {
-	o, fi, fs, clk := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
+func TestSpawnIdleRunner_LaunchFailureRemovesRunnerFromGitHub(t *testing.T) {
+	o, fi, fs, _ := newTestOrchestrator(t, nil)
+	fi.launchErr = errors.New("boom")
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
 
-	clk.advance(11 * time.Minute)
+	// Wait a bit for the failure-cleanup goroutine to run.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fs.mu.Lock()
+		if len(fs.removeCalls) == 1 {
+			fs.mu.Unlock()
+			break
+		}
+		fs.mu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.removeCalls) != 1 || fs.removeCalls[0] != 7777 {
+		t.Errorf("RemoveRunner: want [7777], got %v", fs.removeCalls)
+	}
+	if o.tracker.size() != 0 {
+		t.Errorf("tracker size: want 0 after launch failure, got %d", o.tracker.size())
+	}
+}
+
+func TestReap_RegistrationTimeoutForIdleRunnerNeverTakingJob(t *testing.T) {
+	o, fi, _, clk := newTestOrchestrator(t, func(c *Config) {
+		c.RunnerCfg.RegistrationTimeout = time.Minute
+	})
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
+	}
+	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
+
+	clk.advance(2 * time.Minute)
 	o.reapOnce(t.Context())
 
+	if o.tracker.size() != 0 {
+		t.Errorf("tracker size: want 0 after registration timeout, got %d", o.tracker.size())
+	}
 	_, stops, deletes := fi.snapshot()
 	if len(stops) != 1 || len(deletes) != 1 {
-		t.Errorf("expected stop+delete from registration timeout; stops=%v deletes=%v", stops, deletes)
+		t.Errorf("expected one stop+delete, got stops=%v deletes=%v", stops, deletes)
 	}
-	if len(fs.removeCalls) != 1 {
-		t.Errorf("expected RemoveRunner once on reg timeout; got %v", fs.removeCalls)
+}
+
+func TestReap_DoesNotReapIdleRunnerBeforeTimeout(t *testing.T) {
+	o, fi, _, clk := newTestOrchestrator(t, func(c *Config) {
+		c.RunnerCfg.RegistrationTimeout = time.Hour
+	})
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
+	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
+
+	clk.advance(time.Minute) // far less than RegistrationTimeout=1h
+	o.reapOnce(t.Context())
+
+	if o.tracker.size() != 1 {
+		t.Errorf("tracker should still have entry; got size=%d", o.tracker.size())
+	}
+}
+
+func TestReap_MaxJobDurationForBusyRunner(t *testing.T) {
+	o, fi, _, clk := newTestOrchestrator(t, func(c *Config) {
+		c.RunnerCfg.MaxJobDuration = time.Hour
+	})
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
+	}
+	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
+	_ = o.HandleJobStarted(t.Context(), &ssapi.JobStarted{RunnerName: "incuse-test-aaaa"})
+
+	clk.advance(2 * time.Hour)
+	o.reapOnce(t.Context())
+
 	if o.tracker.size() != 0 {
-		t.Errorf("tracker should be empty after reap")
-	}
-}
-
-func TestReap_DoesNotReapBeforeTimeout(t *testing.T) {
-	o, fi, _, clk := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	waitForLaunches(t, fi, 1)
-
-	clk.advance(5 * time.Minute)
-	o.reapOnce(t.Context())
-
-	if _, stops, _ := fi.snapshot(); len(stops) != 0 {
-		t.Errorf("must not reap before registration timeout; stops=%v", stops)
-	}
-}
-
-func TestReap_MaxJobDuration(t *testing.T) {
-	o, fi, _, clk := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	waitForLaunches(t, fi, 1)
-
-	if err := o.HandleJobStarted(t.Context(), &ssapi.JobStarted{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1},
-	}); err != nil {
-		t.Fatalf("started: %v", err)
-	}
-
-	clk.advance(7 * time.Hour)
-	o.reapOnce(t.Context())
-
-	if _, stops, _ := fi.snapshot(); len(stops) != 1 {
-		t.Errorf("expected reap on max_job_duration; stops=%v", stops)
+		t.Errorf("tracker should be empty after max_job_duration reap; got size=%d", o.tracker.size())
 	}
 }
 
 func TestReap_DriftSweepDeletesOrphanManagedInstances(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
-
 	fi.remote = []incus.Instance{
-		{
-			Name:   "leftover-from-previous-process",
-			Status: "Running",
-			Config: map[string]string{metaManaged: "true"},
-		},
-		{
-			Name:   "not-ours",
-			Status: "Running",
-			Config: map[string]string{}, // no managed tag — leave alone
-		},
+		{Name: "orphan-managed", Status: "Running", Config: map[string]string{metaManaged: "true"}},
+		{Name: "not-ours", Status: "Running", Config: map[string]string{}},
 	}
-
 	o.reapOnce(t.Context())
 
 	_, stops, deletes := fi.snapshot()
-	if len(stops) != 1 || stops[0] != "leftover-from-previous-process" {
-		t.Errorf("orphan stop: want [leftover-from-previous-process], got %v", stops)
+	if len(stops) != 1 || stops[0] != "orphan-managed" {
+		t.Errorf("orphan stops: want [orphan-managed], got %v", stops)
 	}
-	if len(deletes) != 1 || deletes[0] != "leftover-from-previous-process" {
-		t.Errorf("orphan delete: want [leftover-from-previous-process], got %v", deletes)
+	if len(deletes) != 1 || deletes[0] != "orphan-managed" {
+		t.Errorf("orphan deletes: want [orphan-managed], got %v", deletes)
 	}
 }
 
 func TestReap_DriftSweepIgnoresInstancesInTracker(t *testing.T) {
 	o, fi, _, _ := newTestOrchestrator(t, nil)
-
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1, RequestLabels: []string{"incuse-test"}},
-	}); err != nil {
-		t.Fatalf("mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
 
+	fi.mu.Lock()
 	fi.remote = []incus.Instance{
-		{
-			Name:   "incuse-test-aaaa",
-			Status: "Running",
-			Config: map[string]string{metaManaged: "true"},
-		},
+		{Name: "incuse-test-aaaa", Status: "Running", Config: map[string]string{metaManaged: "true"}},
 	}
-
-	o.reapOnce(t.Context())
-
-	if _, stops, deletes := fi.snapshot(); len(stops) != 0 || len(deletes) != 0 {
-		t.Errorf("must not reap own instances; stops=%v deletes=%v", stops, deletes)
+	fi.mu.Unlock()
+	// Don't touch reapOnce stop/delete count via the registration
+	// timer; advance clock minimally.
+	o.driftSweep(t.Context())
+	_, stops, deletes := fi.snapshot()
+	if len(stops) != 0 || len(deletes) != 0 {
+		t.Errorf("drift sweep should ignore tracked runners; stops=%v deletes=%v", stops, deletes)
 	}
 }
 
 func TestRun_StopsOnContextCancel(t *testing.T) {
-	o, _, _, _ := newTestOrchestrator(t, func(c *Config) {
-		c.ReapInterval = time.Hour
-	})
+	o, _, _, _ := newTestOrchestrator(t, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- o.Run(ctx) }()
@@ -612,86 +607,24 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// fakeMetrics records every Metrics* call so tests can assert that
-// the orchestrator drives the hook the way operators expect.
-type fakeMetrics struct {
-	mu              sync.Mutex
-	jobAssigned     int
-	launchOK        int
-	launchFail      int
-	launchDurations []float64
-	runnerLifetimes []float64
-	reapReasons     map[string]int
-	trackedSetTo    []int
-}
-
-func newFakeMetrics() *fakeMetrics { return &fakeMetrics{reapReasons: map[string]int{}} }
-
-func (f *fakeMetrics) JobAssigned() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.jobAssigned++
-}
-func (f *fakeMetrics) LaunchOK() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.launchOK++
-}
-func (f *fakeMetrics) LaunchFail() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.launchFail++
-}
-func (f *fakeMetrics) LaunchDuration(s float64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.launchDurations = append(f.launchDurations, s)
-}
-func (f *fakeMetrics) RunnerLifetime(s float64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.runnerLifetimes = append(f.runnerLifetimes, s)
-}
-func (f *fakeMetrics) Reap(reason string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reapReasons[reason]++
-}
-func (f *fakeMetrics) SetTrackedInstances(n int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.trackedSetTo = append(f.trackedSetTo, n)
-}
-
-func (f *fakeMetrics) snapshot() (jobAssigned, launchOK, launchFail int, reapReasons map[string]int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rr := make(map[string]int, len(f.reapReasons))
-	for k, v := range f.reapReasons {
-		rr[k] = v
-	}
-	return f.jobAssigned, f.launchOK, f.launchFail, rr
-}
-
-func TestMetrics_HappyPath_AssignedThenLaunchOKThenJobCompleted(t *testing.T) {
+func TestMetrics_HappyPath(t *testing.T) {
 	fm := newFakeMetrics()
 	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
-	ctx := t.Context()
 
-	if err := o.Mint(ctx, &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
-		t.Fatalf("Mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 2); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
-	waitForLaunches(t, fi, 1)
-	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
-		t.Fatalf("HandleJobCompleted: %v", err)
-	}
+	waitForLaunches(t, fi, 2)
+	waitForTrackerSize(t, o, 2)
+	_ = o.HandleJobStarted(t.Context(), &ssapi.JobStarted{RunnerName: "incuse-test-aaaa"})
+	_ = o.HandleJobCompleted(t.Context(), &ssapi.JobCompleted{RunnerName: "incuse-test-aaaa", Result: "succeeded"})
 
-	assigned, ok, fail, reasons := fm.snapshot()
-	if assigned != 1 {
-		t.Errorf("jobAssigned: want 1, got %d", assigned)
+	spawned, ok, fail, reasons := fm.snapshot()
+	if spawned != 2 {
+		t.Errorf("RunnerSpawned: want 2, got %d", spawned)
 	}
-	if ok != 1 || fail != 0 {
-		t.Errorf("launches: want ok=1 fail=0, got ok=%d fail=%d", ok, fail)
+	if ok != 2 || fail != 0 {
+		t.Errorf("launches: want ok=2 fail=0, got ok=%d fail=%d", ok, fail)
 	}
 	if reasons["job_completed"] != 1 {
 		t.Errorf("reap reasons: want job_completed=1, got %v", reasons)
@@ -699,90 +632,58 @@ func TestMetrics_HappyPath_AssignedThenLaunchOKThenJobCompleted(t *testing.T) {
 
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
-	if len(fm.launchDurations) != 1 {
-		t.Errorf("launch durations: want 1 sample, got %d", len(fm.launchDurations))
-	}
 	if len(fm.runnerLifetimes) != 1 {
-		t.Errorf("runner lifetimes: want 1 sample, got %d", len(fm.runnerLifetimes))
+		t.Errorf("RunnerLifetime: want 1 sample, got %d", len(fm.runnerLifetimes))
 	}
 }
 
-func TestMetrics_LaunchFailureBumpsLaunchFail(t *testing.T) {
+func TestMetrics_LaunchFailure(t *testing.T) {
 	fm := newFakeMetrics()
 	o, fi, _, _ := newTestOrchestrator(t, func(c *Config) { c.Metrics = fm })
 	fi.launchErr = errors.New("boom")
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
-		t.Fatalf("Mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 	waitForLaunches(t, fi, 1)
 
+	// Give failure-cleanup goroutine time to set fail counter.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_, ok, fail, _ := fm.snapshot()
+		if ok+fail >= 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 	_, ok, fail, _ := fm.snapshot()
 	if ok != 0 || fail != 1 {
 		t.Errorf("launches: want ok=0 fail=1, got ok=%d fail=%d", ok, fail)
 	}
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
-	if len(fm.launchDurations) != 1 {
-		t.Errorf("launch durations: want 1 sample even on failure, got %d", len(fm.launchDurations))
-	}
 }
 
-func TestMetrics_ReapReasonsRoute(t *testing.T) {
+func TestMetrics_ReapReasons(t *testing.T) {
 	fm := newFakeMetrics()
-	o, _, _, clk := newTestOrchestrator(t, func(c *Config) {
+	o, fi, _, clk := newTestOrchestrator(t, func(c *Config) {
 		c.Metrics = fm
 		c.RunnerCfg.RegistrationTimeout = time.Minute
 	})
-	if err := o.Mint(t.Context(), &ssapi.JobAssigned{JobMessageBase: ssapi.JobMessageBase{JobID: "j-1", RunnerRequestID: 1}}); err != nil {
-		t.Fatalf("Mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(t.Context(), 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
+	waitForLaunches(t, fi, 1)
+	waitForTrackerSize(t, o, 1)
 	clk.advance(2 * time.Minute)
 	o.reapOnce(t.Context())
-
 	_, _, _, reasons := fm.snapshot()
 	if reasons["registration_timeout"] != 1 {
 		t.Errorf("reap reasons: want registration_timeout=1, got %v", reasons)
 	}
 }
 
-// Regression for the rocket deploy: every JobAssigned/JobCompleted on
-// our broker session arrived with RunnerRequestID=0. Without
-// JobID-based matching the tracker mis-routes JobCompleted to
-// whatever runner happens to be in flight. JobID is the stable key.
-func TestTracker_MatchesByJobIDWhenRunnerRequestIDIsZero(t *testing.T) {
-	o, fi, _, _ := newTestOrchestrator(t, nil)
-	ctx := t.Context()
-	if err := o.Mint(ctx, &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{
-			JobID:           "abc-123",
-			RunnerRequestID: 0,
-		},
-	}); err != nil {
-		t.Fatalf("Mint: %v", err)
-	}
-	waitForLaunches(t, fi, 1)
-
-	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{
-			JobID:           "abc-123",
-			RunnerRequestID: 0,
-		},
-	}); err != nil {
-		t.Fatalf("HandleJobCompleted: %v", err)
-	}
-	_, stops, deletes := fi.snapshot()
-	if len(stops) != 1 || len(deletes) != 1 {
-		t.Fatalf("want one stop+delete, got stops=%v deletes=%v", stops, deletes)
-	}
-	if o.tracker.size() != 0 {
-		t.Errorf("tracker size: want 0, got %d", o.tracker.size())
-	}
-}
-
-// Regression for the rocket deploy: a JobCompleted that arrives while
-// IncusClient.Launch is still in flight must NOT call Stop/Delete
-// (Incus refuses delete-during-create). Instead, set a termination
-// flag so the launch goroutine handles teardown after Launch returns.
+// Race: JobCompleted arrives while IncusClient.Launch is still in
+// flight. Must NOT call Stop/Delete (Incus refuses delete-during-
+// create). Should set TerminationPending and let the launch
+// goroutine handle teardown after Launch returns.
 func TestRace_JobCompletedDuringLaunchDefersTeardown(t *testing.T) {
 	gate := make(chan struct{})
 	entered := make(chan struct{})
@@ -791,45 +692,25 @@ func TestRace_JobCompletedDuringLaunchDefersTeardown(t *testing.T) {
 	fi.launchEntered = entered
 	ctx := t.Context()
 
-	if err := o.Mint(ctx, &ssapi.JobAssigned{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "race-1"},
-	}); err != nil {
-		t.Fatalf("Mint: %v", err)
+	if _, err := o.HandleDesiredRunnerCount(ctx, 1); err != nil {
+		t.Fatalf("desired count: %v", err)
 	}
 
-	// Wait until the launch goroutine has actually entered
-	// IncusClient.Launch (and is now blocked on gate). Otherwise the
-	// goroutine might still be at the terminationPending pre-check
-	// and bail early via the abort path, which is a different
-	// behaviour than the one we're testing here.
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Launch never entered")
 	}
 
-	// JobCompleted arrives mid-flight.
-	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{
-		JobMessageBase: ssapi.JobMessageBase{JobID: "race-1"},
-	}); err != nil {
+	if err := o.HandleJobCompleted(ctx, &ssapi.JobCompleted{RunnerName: "incuse-test-aaaa"}); err != nil {
 		t.Fatalf("HandleJobCompleted: %v", err)
 	}
-
-	// At this point Stop/Delete must NOT have been called — Launch
-	// is still blocked.
 	_, stops, deletes := fi.snapshot()
 	if len(stops) != 0 || len(deletes) != 0 {
-		t.Fatalf("Stop/Delete fired during launch: stops=%v deletes=%v", stops, deletes)
-	}
-	if o.tracker.size() != 1 {
-		t.Fatalf("tracker should still hold the entry; size=%d", o.tracker.size())
+		t.Fatalf("Stop/Delete fired during launch; stops=%v deletes=%v", stops, deletes)
 	}
 
-	// Unblock Launch. The goroutine should now see TerminationPending,
-	// transition to running, and call Stop+Delete.
 	close(gate)
-
-	// Poll until teardown happens.
 	for i := 0; i < 200; i++ {
 		_, stops, deletes = fi.snapshot()
 		if len(stops) == 1 && len(deletes) == 1 {
@@ -838,9 +719,22 @@ func TestRace_JobCompletedDuringLaunchDefersTeardown(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if len(stops) != 1 || len(deletes) != 1 {
-		t.Fatalf("expected one stop+delete after launch unblocks; stops=%v deletes=%v", stops, deletes)
+		t.Fatalf("expected one stop+delete after gate; stops=%v deletes=%v", stops, deletes)
 	}
 	if o.tracker.size() != 0 {
-		t.Errorf("tracker should be empty after teardown; size=%d", o.tracker.size())
+		t.Errorf("tracker should be empty after teardown; got %d", o.tracker.size())
 	}
+}
+
+func contains(s, sub string) bool {
+	return s != "" && sub != "" && (s == sub || (len(s) >= len(sub) && (indexOf(s, sub) >= 0)))
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

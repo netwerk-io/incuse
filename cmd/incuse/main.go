@@ -161,7 +161,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg *config.Config) error {
 	if obsServer != nil {
 		g.Go(func() error { return obsServer.Run(gctx) })
 	}
-	g.Go(func() error { return ss.Run(gctx, orch, orch) })
+	g.Go(func() error { return ss.Run(gctx, orch) })
 	g.Go(func() error {
 		if obsServer != nil {
 			obsServer.MarkReady()
