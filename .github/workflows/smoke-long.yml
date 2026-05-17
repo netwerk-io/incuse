@@ -1,0 +1,9 @@
+name: incuse smoke (long)
+on: workflow_dispatch
+jobs:
+  hello:
+    runs-on: [self-hosted, linux, x64, incuse-rocket]
+    steps:
+      - run: uname -a; cat /etc/os-release
+      - run: sleep 60
+      - run: echo done
