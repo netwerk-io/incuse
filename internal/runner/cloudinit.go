@@ -12,8 +12,8 @@ import (
 // payload — the orchestrator builds this from config + the resolved
 // release + the scaleset-minted JIT config.
 type CloudInitSpec struct {
-	// Release is the actions/runner version + download URL the VM will
-	// install. Resolved by LatestResolver at orchestrator startup.
+	// Release is the actions/runner version + download URL the VM
+	// will install when Baked is false. Ignored when Baked is true.
 	Release Release
 
 	// JITConfig is the encoded JIT runner configuration from the
@@ -22,55 +22,68 @@ type CloudInitSpec struct {
 	JITConfig string
 
 	// WorkFolder is the runner's _work directory (relative to
-	// /opt/runner). Comes from config.runner.work_folder.
+	// /opt/runner). Used only when Baked is false (the baked image
+	// already has /opt/runner/_work pre-created).
 	WorkFolder string
 
 	// RunnerName is the name the runner registers with. Used for the
 	// hostname inside the VM and in log lines so an operator can
 	// correlate `incus list` output against runner names.
 	RunnerName string
+
+	// Baked switches the template to assume actions/runner, the
+	// runner user, packages, and the systemd unit are pre-installed
+	// on the image. cloud-init only drops the per-launch JIT and
+	// starts the unit. Cuts pickup latency by ~70s on a 1-vCPU VM.
+	Baked bool
 }
 
 // Validate reports the first missing field. Called by Render to fail
-// loudly rather than emit a half-baked cloud-config that boots into a
-// broken state.
+// loudly rather than emit a half-baked cloud-config that boots into
+// a broken state.
 func (s CloudInitSpec) Validate() error {
+	if s.JITConfig == "" {
+		return errors.New("jit_config is required")
+	}
+	if s.RunnerName == "" {
+		return errors.New("runner_name is required")
+	}
+	if s.Baked {
+		// Baked mode: Release/WorkFolder pre-installed in the image.
+		return nil
+	}
 	switch {
 	case s.Release.Version == "":
 		return errors.New("release version is required")
 	case s.Release.DownloadURL == "":
 		return errors.New("release download_url is required")
-	case s.JITConfig == "":
-		return errors.New("jit_config is required")
 	case s.WorkFolder == "":
 		return errors.New("work_folder is required")
-	case s.RunnerName == "":
-		return errors.New("runner_name is required")
 	}
 	return nil
 }
 
 // Render produces the #cloud-config payload to hand to Incus as the
-// `cloud-init.user-data` config key on the launched VM.
+// `cloud-init.user-data` config key on the launched VM. Picks the
+// vanilla or baked template based on spec.Baked.
 func Render(spec CloudInitSpec) ([]byte, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
+	tmpl := cloudInitTemplate
+	if spec.Baked {
+		tmpl = cloudInitBakedTemplate
+	}
 	var buf bytes.Buffer
-	if err := cloudInitTemplate.Execute(&buf, spec); err != nil {
+	if err := tmpl.Execute(&buf, spec); err != nil {
 		return nil, fmt.Errorf("rendering cloud-init template: %w", err)
 	}
 	return buf.Bytes(), nil
 }
 
-// cloudInitTemplate is the single source of truth for what runs at
-// first-boot. Notes on the design:
-//
-//   - The runner tarball is downloaded from GitHub directly inside the
-//     VM. Trust comes from HTTPS to github.com. Sha256 is intentionally
-//     not pinned because we always-track the latest release; pinning
-//     would require fetching a separate sha256 manifest. Follow-up if
-//     supply-chain hardening becomes a priority.
+// cloudInitTemplate is the vanilla-image template — every VM does a
+// full install of packages and the actions/runner tarball at first
+// boot. Use this when runner.use_baked_image is false. Notes:
 //
 //   - JIT config goes into /etc/incuse/jit.env (mode 0600, owned by
 //     root — systemd reads EnvironmentFile as PID 1 before dropping
@@ -78,24 +91,13 @@ func Render(spec CloudInitSpec) ([]byte, error) {
 //     keeps cloud-init's write_files step independent of the
 //     users-groups module ordering.
 //
-//     runner user) and the systemd unit reads it via EnvironmentFile.
-//     Keeps it off the kernel command line and out of `ps`.
-//
 //   - The runner unit is Type=oneshot. After ExecStart returns, we
 //     sleep briefly so the actions/runner process has time to flush
 //     its final job-completion HTTP write to GitHub before the VM
-//     dies. Without the grace period a 10x-burst smoke loses ~20%
-//     of completions to GH-side mid-step state. The poweroff itself
-//     uses the systemd `+` prefix so it runs as root regardless of
-//     the unit's User=runner setting; without it, /sbin/poweroff
-//     fails with "Interactive authentication required".
-//     When run.sh exits (job done, or job-cancelled), systemd fires
-//     poweroff, the VM stops, the orchestrator sees the stopped state
-//     and deletes the instance.
+//     dies. The poweroff itself uses the systemd `+` prefix so it
+//     runs as root regardless of the unit's User=runner setting.
 //
-//   - Docker is mandatory: jobs that use docker actions assume it; we
-//     run on a VM precisely so docker-in-VM works without nesting
-//     headaches.
+//   - Docker is mandatory: jobs that use docker actions assume it.
 var cloudInitTemplate = template.Must(template.New("cloudinit").Parse(`#cloud-config
 hostname: {{.RunnerName}}
 preserve_hostname: false
@@ -156,4 +158,24 @@ runcmd:
   - systemctl start docker.service
   - systemctl daemon-reload
   - systemctl enable --now incuse-runner.service
+`))
+
+// cloudInitBakedTemplate is the minimal template used when
+// runner.use_baked_image is true. The image has the runner user,
+// /opt/runner/run.sh, packages, docker, and the
+// /etc/systemd/system/incuse-runner.service unit already installed
+// (see scripts/build-runner-image.sh). Cloud-init only drops the
+// per-launch JIT and starts the unit.
+var cloudInitBakedTemplate = template.Must(template.New("cloudinit-baked").Parse(`#cloud-config
+hostname: {{.RunnerName}}
+preserve_hostname: false
+
+write_files:
+  - path: /etc/incuse/jit.env
+    permissions: "0600"
+    content: |
+      INCUSE_JIT={{.JITConfig}}
+
+runcmd:
+  - systemctl start incuse-runner.service
 `))

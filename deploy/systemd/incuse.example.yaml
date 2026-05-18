@@ -85,6 +85,12 @@ runner:
   runner_version: "2.328.0"
   runner_sha256: "01a2c8a45c45ea3d7d3c1f2c77d3a2f25b27e90ce6fb8b78bcb8b9f11a1234ab"
 
+  # When true, incuse uses the minimal cloud-init template and assumes
+  # the image already has actions/runner, the runner user, packages,
+  # and /etc/systemd/system/incuse-runner.service installed. Build
+  # such an image with scripts/build-runner-image.sh.
+  use_baked_image: false
+
   # Path inside the runner VM where actions check out the repo.
   work_folder: _work
 

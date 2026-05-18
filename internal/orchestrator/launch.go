@@ -64,7 +64,13 @@ func buildLaunchRequest(in launchInputs) incus.LaunchRequest {
 
 	imageServer := in.runnerCfg.ImageServer
 	imageProtocol := in.runnerCfg.ImageProtocol
-	if imageProtocol == "" {
+	switch {
+	case imageServer == "":
+		// Local image alias: leave Protocol blank so Incus does a
+		// local lookup instead of trying simplestreams against an
+		// empty server URL.
+		imageProtocol = ""
+	case imageProtocol == "":
 		imageProtocol = "simplestreams"
 	}
 

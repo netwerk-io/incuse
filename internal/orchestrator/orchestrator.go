@@ -325,10 +325,17 @@ func (o *Orchestrator) spawnIdleRunner(ctx context.Context) {
 
 	spec := defaultSpec(o.cfg.RunnerCfg, o.cfg.HostArch)
 
-	release, err := o.cfg.ReleaseResolver.Resolve(ctx)
-	if err != nil {
-		o.cfg.Logger.Error("resolve runner release", "error", err)
-		return
+	var release runner.Release
+	if !o.cfg.RunnerCfg.UseBakedImage {
+		// Vanilla mode needs the runner tarball URL in cloud-init.
+		// Baked mode skips this — the version is whatever was baked
+		// into the image at scripts/build-runner-image.sh time.
+		var err error
+		release, err = o.cfg.ReleaseResolver.Resolve(ctx)
+		if err != nil {
+			o.cfg.Logger.Error("resolve runner release", "error", err)
+			return
+		}
 	}
 
 	runnerName := makeRunnerName(o.cfg.ScaleSet.Spec().Name, o.cfg.NameSuffix())
@@ -343,6 +350,7 @@ func (o *Orchestrator) spawnIdleRunner(ctx context.Context) {
 		JITConfig:  string(jit),
 		WorkFolder: o.cfg.RunnerCfg.WorkFolder,
 		RunnerName: runnerName,
+		Baked:      o.cfg.RunnerCfg.UseBakedImage,
 	})
 	if err != nil {
 		o.cfg.Logger.Error("render cloud-init", "error", err, "runner_name", runnerName)
