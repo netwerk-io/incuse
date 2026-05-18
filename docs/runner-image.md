@@ -65,11 +65,53 @@ devices:
 
 VM-only — no `security.nesting`, no `security.privileged`. All isolation comes from the hypervisor.
 
-## Pre-baking (follow-up)
+## Pre-baked image (`use_baked_image: true`)
 
-If cold-boot + cloud-init + runner-download consistently exceeds the registration timeout (`runner.registration_timeout`, default 10 min), we'll bake an image with the runner pre-installed. Two options on the table:
+Vanilla flow runs `apt-get install` + downloads actions/runner on every cold boot, costing ~60-70s per VM. The baked-image flow does that work once, then each spawned VM only pays for kernel boot + cloud-init drop-of-jit + service start (~25-35s on a 1-vCPU VM).
 
-- **Packer-against-Incus**: standard pipeline, but Packer's Incus builder is third-party.
-- **Periodic build VM**: a daily systemd timer launches a build VM that runs the cloud-init, then publishes a snapshot back as an Incus image alias (`incuse/runner:latest`). incuse then `incus launch incuse/runner:latest` instead of the upstream cloud image.
+### Build the image
 
-Decide after phase-4 smoke timings.
+On the Incus host, as a user that can talk to the daemon (root or in `incus-admin`):
+
+```bash
+RUNNER_VERSION=2.334.0 \
+  RUNNER_SHA256=048024cd2c848eb6f14d5646d56c13a4def2ae7ee3ad12122bee960c56f3d271 \
+  bash scripts/build-runner-image.sh
+```
+
+What it does, briefly: launches `images:ubuntu/24.04/cloud` as `incuse-builder`, `apt-get install`s the runtime deps, creates the `runner` user with `NOPASSWD` sudo + docker group, downloads + sha-checks + extracts actions/runner into `/opt/runner`, drops `/etc/systemd/system/incuse-runner.service`, runs `cloud-init clean`, stops the VM, `incus publish`s as `incuse-runner-v<ver>`, points the floating `incuse-runner` alias at the new fingerprint.
+
+Re-run with a new `RUNNER_VERSION` whenever actions/runner releases a new version. The `--reuse` flag on `incus publish` makes re-runs idempotent.
+
+### Switch incuse to the baked image
+
+In `/etc/incuse/config.yaml`:
+
+```yaml
+runner:
+  image_alias: incuse-runner       # the floating alias from the build script
+  use_baked_image: true            # tells incuse to use the minimal cloud-init template
+  runner_version: 2.334.0          # informational; baked into the image
+  runner_sha256: 048024cd2c848eb6f14d5646d56c13a4def2ae7ee3ad12122bee960c56f3d271
+```
+
+Leave `image_server` / `image_protocol` unset (or empty). incuse looks up the alias on the local Incus daemon, not from a remote simplestreams server.
+
+```bash
+sudo -u incuse /usr/local/bin/incuse --validate --config /etc/incuse/config.yaml
+sudo systemctl restart incuse
+```
+
+### When to refresh
+
+- New actions/runner release (security or feature). Bump `RUNNER_VERSION` + `RUNNER_SHA256`, re-run.
+- Critical Ubuntu base-image security update. Re-run with the same `RUNNER_VERSION`; the script will re-pull the latest `images:ubuntu/24.04/cloud` and re-install everything on top.
+
+incuse picks up the new image on its next runner spawn. Already-running VMs are unaffected.
+
+### Trade-offs
+
+- **Pro**: ~60-70s faster pickup. P50 drops from ~95s to ~25-35s on a 1-vCPU VM.
+- **Con**: image is now your responsibility — stale base-image security updates land later.
+- **Con**: harder to debug "vanilla works but baked doesn't" — try `use_baked_image: false` to force the heavyweight path if a job is failing weirdly.
+

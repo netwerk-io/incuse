@@ -91,6 +91,12 @@ type RunnerConfig struct {
 	RootDiskGiB         int           `yaml:"root_disk_gib"`
 	RegistrationTimeout time.Duration `yaml:"registration_timeout"`
 	MaxJobDuration      time.Duration `yaml:"max_job_duration"`
+
+	// UseBakedImage tells the orchestrator to use the minimal
+	// cloud-init template that assumes actions/runner, the runner
+	// user, packages, and the systemd unit are pre-installed on the
+	// image. Build the image with scripts/build-runner-image.sh.
+	UseBakedImage bool `yaml:"use_baked_image"`
 }
 
 // Auth modes.
@@ -151,14 +157,23 @@ func (c *Config) applyDefaults() {
 	if c.Incus.DefaultProfile == "" {
 		c.Incus.DefaultProfile = "incuse-runner"
 	}
-	if c.Runner.ImageServer == "" {
-		c.Runner.ImageServer = "https://images.linuxcontainers.org"
-	}
-	if c.Runner.ImageProtocol == "" {
-		c.Runner.ImageProtocol = "simplestreams"
-	}
-	if c.Runner.ImageAlias == "" {
-		c.Runner.ImageAlias = "ubuntu/24.04/cloud"
+	if c.Runner.UseBakedImage {
+		// Baked-image flow: alias resolves locally on the Incus daemon.
+		// Leave ImageServer/Protocol empty so the daemon doesn't try a
+		// remote simplestreams lookup.
+		if c.Runner.ImageAlias == "" {
+			c.Runner.ImageAlias = "incuse-runner"
+		}
+	} else {
+		if c.Runner.ImageServer == "" {
+			c.Runner.ImageServer = "https://images.linuxcontainers.org"
+		}
+		if c.Runner.ImageProtocol == "" {
+			c.Runner.ImageProtocol = "simplestreams"
+		}
+		if c.Runner.ImageAlias == "" {
+			c.Runner.ImageAlias = "ubuntu/24.04/cloud"
+		}
 	}
 	if c.Runner.WorkFolder == "" {
 		c.Runner.WorkFolder = "_work"

@@ -1,0 +1,12 @@
+#cloud-config
+hostname: incuse-runner-abc123
+preserve_hostname: false
+
+write_files:
+  - path: /etc/incuse/jit.env
+    permissions: "0600"
+    content: |
+      INCUSE_JIT=ZmFrZS1qaXQtY29uZmlnLWJsb2I=
+
+runcmd:
+  - systemctl start incuse-runner.service

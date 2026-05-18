@@ -144,16 +144,31 @@ func (c *realClient) Launch(ctx context.Context, req LaunchRequest) (*Instance, 
 		return nil, err
 	}
 
+	source := api.InstanceSource{
+		Type:     "image",
+		Protocol: req.Image.Protocol,
+		Server:   req.Image.Server,
+		Alias:    req.Image.Alias,
+	}
+	// For local-image launches (Server unset), pre-resolve the alias
+	// to a fingerprint. The daemon's image-download path otherwise
+	// goes through a remote-lookup branch that fails with "Failed
+	// getting remote image info" even for known-local aliases.
+	if source.Server == "" && source.Alias != "" {
+		alias, _, err := c.server.GetImageAlias(req.Image.Alias)
+		if err != nil {
+			return nil, fmt.Errorf("incus: resolve local image alias %q: %w", req.Image.Alias, err)
+		}
+		source.Alias = ""
+		source.Fingerprint = alias.Target
+		source.Protocol = ""
+	}
+
 	post := api.InstancesPost{
-		Name: req.Name,
-		Type: api.InstanceType(req.Type),
-		Source: api.InstanceSource{
-			Type:     "image",
-			Protocol: req.Image.Protocol,
-			Server:   req.Image.Server,
-			Alias:    req.Image.Alias,
-		},
-		Start: true,
+		Name:   req.Name,
+		Type:   api.InstanceType(req.Type),
+		Source: source,
+		Start:  true,
 		InstancePut: api.InstancePut{
 			Description: req.Description,
 			Config:      cloneStringMap(req.Config),
