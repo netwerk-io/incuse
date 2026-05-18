@@ -76,6 +76,51 @@ func TestRender_ValidationFailures(t *testing.T) {
 	}
 }
 
+func TestRender_GoldenContainer(t *testing.T) {
+	spec := sampleSpec()
+	spec.Container = true
+	got, err := Render(spec)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	goldenPath := filepath.Join("testdata", "cloudinit-container.golden")
+
+	if *updateGolden {
+		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			t.Fatalf("mkdir testdata: %v", err)
+		}
+		if err := os.WriteFile(goldenPath, got, 0o600); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		return
+	}
+
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with -update to create): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("cloud-init output drifted from golden file. Diff:\n--- want\n%s\n--- got\n%s", want, got)
+	}
+}
+
+func TestRender_ContainerOmitsDocker(t *testing.T) {
+	spec := sampleSpec()
+	spec.Container = true
+	got, err := Render(spec)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, banned := range []string{"docker.io", "docker.service", "groups: [sudo, docker]"} {
+		if contains(string(got), banned) {
+			t.Errorf("container cloud-init must not contain %q", banned)
+		}
+	}
+	if !contains(string(got), "groups: [sudo]") {
+		t.Error("container runner user should still be in sudo")
+	}
+}
+
 func TestRender_EmbedsCriticalDirectives(t *testing.T) {
 	got, err := Render(sampleSpec())
 	if err != nil {

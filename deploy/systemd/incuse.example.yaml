@@ -111,6 +111,21 @@ runner:
   registration_timeout: 10m
   max_job_duration: 6h
 
+  # Instance type the orchestrator launches per job. Default is `vm`
+  # (full hypervisor isolation; ~30s cold-boot; docker just works).
+  # Set to `container` for system-container mode (~2s cold-boot, shared
+  # kernel, no docker unless privileged: true is also set). Run a
+  # second incuse instance under a separate systemd unit + scale-set
+  # name if you need both shapes side-by-side on the same host.
+  # instance_type: vm
+
+  # Only valid when instance_type: container. Sets
+  # security.privileged=true on the launched container so jobs can
+  # run docker / kernel-level tools. Trades hypervisor isolation for
+  # speed — a compromised job can affect the host kernel. Only
+  # appropriate for trusted internal workloads.
+  # privileged: false
+
 # Optional. Empty / absent disables the HTTP server entirely.
 # observability:
 #   # Bind address for /healthz, /readyz, /metrics. The default install

@@ -38,9 +38,41 @@ When the runner finishes its job (or is cancelled), `run.sh` exits, systemd fire
 
 ## Why VMs (and not system containers)
 
-Docker is mandatory: every non-trivial Actions workflow uses docker actions or `services:`. Running Docker inside an Incus system container needs `security.nesting=true` and a careful storage-driver dance, and you still hit edge cases (cgroup v2 quirks, AppArmor confusion, `--privileged` interactions). VMs sidestep all of that — Docker inside the VM is just Docker on Linux.
+Default is VM. Docker is mandatory for many Actions workflows: every non-trivial workflow uses docker actions or `services:`. Running Docker inside an Incus system container needs `security.nesting=true` and a careful storage-driver dance, and you still hit edge cases (cgroup v2 quirks, AppArmor confusion, `--privileged` interactions). VMs sidestep all of that — Docker inside the VM is just Docker on Linux.
 
-Container support is parked as a follow-up: cheap to revisit if a workload that doesn't need docker would benefit from container-speed boots.
+For workloads that **don't** need docker, system containers are a much faster alternative — cold-boot is ~2s vs ~30s for a VM, and there's no per-launch hypervisor overhead.
+
+## System container mode
+
+Set `runner.instance_type: container` in the config. Each launched instance becomes an Incus system container instead of a VM, with these security flags applied per-launch:
+
+- `security.nesting: true` — nested user namespaces, required for most container runtimes / unshare workloads.
+- `security.syscalls.intercept.mknod: true` and `security.syscalls.intercept.setxattr: true` — the standard "docker-in-LXC" pair (still wired even in non-privileged mode so kernel-syscall workloads work).
+
+The rendered cloud-init drops the docker.io install and the `docker.service` systemd dependency. The runner user no longer joins the docker group. Jobs that try to run `docker` will fail — use VM mode for those, or set `runner.privileged: true` (below).
+
+### Insecure mode (`privileged: true`)
+
+Setting `runner.privileged: true` (only valid alongside `instance_type: container`) adds `security.privileged=true` to the launched container. The container runs as host root and a compromised job can affect the host kernel. Use only for trusted internal workloads where the speed of container start outweighs the loss of hypervisor isolation. Docker can run in this mode.
+
+### Running both shapes on the same host
+
+incuse is single-scale-set per process. To offer both VM and container runners on the same host, run two systemd units pointing at two configs:
+
+```
+/etc/systemd/system/incuse-vm.service        → /etc/incuse/vm.yaml      (instance_type: vm,        scale_set.name: incuse-rocket-vm)
+/etc/systemd/system/incuse-container.service → /etc/incuse/container.yaml (instance_type: container, scale_set.name: incuse-rocket-container)
+```
+
+Workflows pick by label:
+
+```yaml
+# fast, no docker
+runs-on: [self-hosted, incuse-rocket-container]
+
+# docker-needing
+runs-on: [self-hosted, incuse-rocket-vm]
+```
 
 ## Incus profile (`incuse-runner`)
 
@@ -63,7 +95,27 @@ devices:
     parent: <host-bridge>
 ```
 
-VM-only — no `security.nesting`, no `security.privileged`. All isolation comes from the hypervisor.
+VM-only by default — no `security.nesting`, no `security.privileged`. All isolation comes from the hypervisor.
+
+For `instance_type: container` use a separate profile (e.g. `incuse-runner-container`). The `security.secureboot` key is VM-only and must not be set on container profiles. The minimum viable container profile:
+
+```
+config:
+  limits.cpu: "2"
+  limits.memory: 8GiB
+devices:
+  root:
+    type: disk
+    pool: default
+    path: /
+    size: 40GiB
+  eth0:
+    type: nic
+    nictype: macvlan
+    parent: <host-interface>
+```
+
+incuse adds the per-launch `security.nesting`, `security.syscalls.intercept.*`, and (when `privileged: true`) `security.privileged` config keys on top of whatever the profile defines.
 
 ## Pre-baked image (`use_baked_image: true`)
 

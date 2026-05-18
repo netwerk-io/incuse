@@ -1,0 +1,57 @@
+#cloud-config
+hostname: incuse-runner-abc123
+preserve_hostname: false
+
+users:
+  - name: runner
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - tar
+  - git
+  - jq
+  - ca-certificates
+
+write_files:
+  - path: /etc/incuse/jit.env
+    permissions: "0600"
+    content: |
+      INCUSE_JIT=ZmFrZS1qaXQtY29uZmlnLWJsb2I=
+  - path: /etc/systemd/system/incuse-runner.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=GitHub Actions runner (one-shot)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      User=runner
+      Group=runner
+      WorkingDirectory=/opt/runner
+      EnvironmentFile=/etc/incuse/jit.env
+      ExecStart=/opt/runner/run.sh --jitconfig ${INCUSE_JIT}
+      ExecStopPost=+/bin/sleep 15
+      ExecStopPost=+/sbin/poweroff
+      RemainAfterExit=no
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - install -d -o runner -g runner -m 0755 /opt/runner /opt/runner/_work
+  - curl -fsSL "https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz" -o /tmp/runner.tgz
+  - tar -xzf /tmp/runner.tgz -C /opt/runner
+  - chown -R runner:runner /opt/runner
+  - rm -f /tmp/runner.tgz
+  - systemctl daemon-reload
+  - systemctl enable --now incuse-runner.service

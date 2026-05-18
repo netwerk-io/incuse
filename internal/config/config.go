@@ -92,12 +92,31 @@ type RunnerConfig struct {
 	RegistrationTimeout time.Duration `yaml:"registration_timeout"`
 	MaxJobDuration      time.Duration `yaml:"max_job_duration"`
 
+	// InstanceType selects between Incus virtual-machine (default,
+	// hypervisor-isolated, ~30s cold-boot) and system container
+	// (shared kernel, ~2s cold-boot, weaker isolation). Valid values:
+	// "vm" (default) or "container".
+	InstanceType string `yaml:"instance_type"`
+
+	// Privileged elevates a container runner to security.privileged=true.
+	// Ignored when InstanceType is vm. This is the "insecure" docker
+	// option — a compromised job can affect the host kernel. Only
+	// appropriate for trusted internal workloads where the speed of
+	// container start outweighs the loss of hypervisor isolation.
+	Privileged bool `yaml:"privileged"`
+
 	// UseBakedImage tells the orchestrator to use the minimal
 	// cloud-init template that assumes actions/runner, the runner
 	// user, packages, and the systemd unit are pre-installed on the
 	// image. Build the image with scripts/build-runner-image.sh.
 	UseBakedImage bool `yaml:"use_baked_image"`
 }
+
+// Instance types.
+const (
+	InstanceTypeVM        = "vm"
+	InstanceTypeContainer = "container"
+)
 
 // Auth modes.
 const (
@@ -193,6 +212,9 @@ func (c *Config) applyDefaults() {
 	if c.Runner.MaxJobDuration == 0 {
 		c.Runner.MaxJobDuration = 6 * time.Hour
 	}
+	if c.Runner.InstanceType == "" {
+		c.Runner.InstanceType = InstanceTypeVM
+	}
 }
 
 // Validate is exported so callers can re-check after programmatic
@@ -244,6 +266,15 @@ func (c *Config) Validate() error {
 	check(c.Runner.RunnerVersion != "", "runner.runner_version is required (pin the actions/runner release)")
 	check(c.Runner.RegistrationTimeout > 0, "runner.registration_timeout must be > 0")
 	check(c.Runner.MaxJobDuration > 0, "runner.max_job_duration must be > 0")
+
+	switch c.Runner.InstanceType {
+	case InstanceTypeVM, InstanceTypeContainer:
+	default:
+		errs = append(errs, fmt.Sprintf("runner.instance_type %q must be %q or %q", c.Runner.InstanceType, InstanceTypeVM, InstanceTypeContainer))
+	}
+	if c.Runner.Privileged && c.Runner.InstanceType != InstanceTypeContainer {
+		errs = append(errs, "runner.privileged is only valid when runner.instance_type=container")
+	}
 
 	if len(errs) > 0 {
 		return errors.New("config invalid:\n  - " + strings.Join(errs, "\n  - "))
