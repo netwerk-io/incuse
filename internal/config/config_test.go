@@ -54,6 +54,61 @@ func TestParse_AppliesDefaults(t *testing.T) {
 	if cfg.Runner.MaxJobDuration != 6*time.Hour {
 		t.Errorf("max job duration default: got %v", cfg.Runner.MaxJobDuration)
 	}
+	if cfg.Runner.InstanceType != InstanceTypeVM {
+		t.Errorf("instance_type default: got %q, want %q", cfg.Runner.InstanceType, InstanceTypeVM)
+	}
+}
+
+func TestValidate_InstanceType(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutator func(*Config)
+		wantErr string
+	}{
+		{
+			name:    "unknown instance type",
+			mutator: func(c *Config) { c.Runner.InstanceType = "jail" },
+			wantErr: "runner.instance_type",
+		},
+		{
+			name: "privileged on vm",
+			mutator: func(c *Config) {
+				c.Runner.InstanceType = InstanceTypeVM
+				c.Runner.Privileged = true
+			},
+			wantErr: "runner.privileged is only valid",
+		},
+		{
+			name: "privileged on container is allowed",
+			mutator: func(c *Config) {
+				c.Runner.InstanceType = InstanceTypeContainer
+				c.Runner.Privileged = true
+			},
+			wantErr: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(validYAML()))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			tc.mutator(cfg)
+			err = cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestParse_RejectsUnknownKeys(t *testing.T) {

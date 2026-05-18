@@ -36,6 +36,16 @@ type CloudInitSpec struct {
 	// on the image. cloud-init only drops the per-launch JIT and
 	// starts the unit. Cuts pickup latency by ~70s on a 1-vCPU VM.
 	Baked bool
+
+	// Container drops the docker.io install + docker.service
+	// dependency from the rendered cloud-config. Non-privileged
+	// system containers can't run dockerd, and even privileged ones
+	// usually run jobs that don't need it (the value-prop of
+	// containers is fast cold-boot for non-docker workloads). When
+	// true, the runner user also no longer joins the docker group.
+	// Combines with Baked: a baked container image still emits the
+	// minimal Baked template, just without docker bits.
+	Container bool
 }
 
 // Validate reports the first missing field. Called by Render to fail
@@ -104,7 +114,7 @@ preserve_hostname: false
 
 users:
   - name: runner
-    groups: [sudo, docker]
+    groups: [sudo{{if not .Container}}, docker{{end}}]
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     lock_passwd: true
@@ -117,7 +127,9 @@ packages:
   - git
   - jq
   - ca-certificates
+{{- if not .Container}}
   - docker.io
+{{- end}}
 
 write_files:
   - path: /etc/incuse/jit.env
@@ -129,8 +141,8 @@ write_files:
     content: |
       [Unit]
       Description=GitHub Actions runner (one-shot)
-      After=network-online.target docker.service
-      Wants=network-online.target docker.service
+      After=network-online.target{{if not .Container}} docker.service{{end}}
+      Wants=network-online.target{{if not .Container}} docker.service{{end}}
 
       [Service]
       Type=oneshot
@@ -154,8 +166,10 @@ runcmd:
   - tar -xzf /tmp/runner.tgz -C /opt/runner
   - chown -R runner:runner /opt/runner
   - rm -f /tmp/runner.tgz
+{{- if not .Container}}
   - systemctl enable docker.service
   - systemctl start docker.service
+{{- end}}
   - systemctl daemon-reload
   - systemctl enable --now incuse-runner.service
 `))

@@ -351,6 +351,7 @@ func (o *Orchestrator) spawnIdleRunner(ctx context.Context) {
 		WorkFolder: o.cfg.RunnerCfg.WorkFolder,
 		RunnerName: runnerName,
 		Baked:      o.cfg.RunnerCfg.UseBakedImage,
+		Container:  o.cfg.RunnerCfg.InstanceType == config.InstanceTypeContainer,
 	})
 	if err != nil {
 		o.cfg.Logger.Error("render cloud-init", "error", err, "runner_name", runnerName)

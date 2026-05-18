@@ -40,8 +40,8 @@ type launchInputs struct {
 
 // buildLaunchRequest assembles the incus.LaunchRequest from a
 // resolved runner spec and the rendered cloud-init payload. Sets
-// Ephemeral=true so a stuck VM that never powers itself off is still
-// cleaned up by Incus on the next stop.
+// Ephemeral=true so a stuck instance that never powers itself off is
+// still cleaned up by Incus on the next stop.
 func buildLaunchRequest(in launchInputs) incus.LaunchRequest {
 	cfgMap := map[string]string{
 		"limits.cpu":           strconv.Itoa(in.spec.VCPUs),
@@ -51,6 +51,24 @@ func buildLaunchRequest(in launchInputs) incus.LaunchRequest {
 		metaRunnerName:         in.runnerName,
 		metaScaleSetID:         strconv.Itoa(in.scaleSetID),
 		metaMintedAt:           in.mintedAt.UTC().Format(time.RFC3339),
+	}
+
+	instanceType := incus.InstanceTypeVM
+	if in.runnerCfg.InstanceType == config.InstanceTypeContainer {
+		instanceType = incus.InstanceTypeContainer
+		// security.nesting lets the container run nested user
+		// namespaces, which Docker (and most container runtimes
+		// inside the runner) need. The two syscall intercepts are
+		// the standard "docker-in-LXC" pair documented by Incus.
+		cfgMap["security.nesting"] = "true"
+		cfgMap["security.syscalls.intercept.mknod"] = "true"
+		cfgMap["security.syscalls.intercept.setxattr"] = "true"
+		if in.runnerCfg.Privileged {
+			// Nuclear option: the container runs as host root.
+			// Required for some kernel-level test harnesses but
+			// loses the isolation that made containers attractive.
+			cfgMap["security.privileged"] = "true"
+		}
 	}
 
 	devices := map[string]map[string]string{
@@ -76,7 +94,7 @@ func buildLaunchRequest(in launchInputs) incus.LaunchRequest {
 
 	return incus.LaunchRequest{
 		Name:        in.runnerName,
-		Type:        incus.InstanceTypeVM,
+		Type:        instanceType,
 		Profiles:    []string{in.incusCfg.DefaultProfile},
 		Image:       incus.ImageSource{Server: imageServer, Protocol: imageProtocol, Alias: in.runnerCfg.ImageAlias},
 		Config:      cfgMap,
