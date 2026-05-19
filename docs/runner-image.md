@@ -131,7 +131,49 @@ RUNNER_VERSION=2.334.0 \
   bash scripts/build-runner-image.sh
 ```
 
-What it does, briefly: launches `images:ubuntu/24.04/cloud` as `incuse-builder`, `apt-get install`s the runtime deps, creates the `runner` user with `NOPASSWD` sudo + docker group, downloads + sha-checks + extracts actions/runner into `/opt/runner`, drops `/etc/systemd/system/incuse-runner.service`, runs `cloud-init clean`, stops the VM, `incus publish`s as `incuse-runner-v<ver>`, points the floating `incuse-runner` alias at the new fingerprint.
+What it does, briefly: launches `images:ubuntu/24.04/cloud` as `incuse-builder`, `apt-get install`s the runtime deps, creates the `runner` user with `NOPASSWD` sudo + docker group, downloads + sha-checks + extracts actions/runner into `/opt/runner`, populates `/opt/hostedtoolcache` with Node / Python / Go (last 3 majors of each) plus `gh`, `aws`, `az` system-wide, drops `/etc/systemd/system/incuse-runner.service`, runs `cloud-init clean`, stops the VM, `incus publish`s as `incuse-runner-v<ver>`, points the floating `incuse-runner` alias at the new fingerprint.
+
+### Building a container image
+
+Same script, set `INSTANCE_TYPE=container`. Defaults swap accordingly:
+
+| | VM (default) | Container |
+|---|---|---|
+| `incus launch` flag | `--vm` | (none) |
+| Default profile | `incuse-runner` | `incuse-runner-container` |
+| Image alias | `incuse-runner` | `incuse-runner-container` |
+| docker.io install | yes | no (set `WITH_DOCKER=1` to override) |
+
+```bash
+INSTANCE_TYPE=container \
+  RUNNER_VERSION=2.334.0 \
+  RUNNER_SHA256=048024cd2c848eb6f14d5646d56c13a4def2ae7ee3ad12122bee960c56f3d271 \
+  bash scripts/build-runner-image.sh
+```
+
+The container profile (`incuse-runner-container` by default) must exist before running the script — see the profile section below.
+
+### Refreshing the toolcache
+
+The script bakes specific patch versions of Node / Python / Go. Override the defaults to pin or refresh:
+
+```bash
+TOOLCACHE_NODE_VERSIONS="22.11.0 24.0.0" \
+  TOOLCACHE_PYTHON_VERSIONS="3.12.7 3.13.0" \
+  TOOLCACHE_GO_VERSIONS="1.24.4 1.25.3" \
+  RUNNER_VERSION=... RUNNER_SHA256=... \
+  bash scripts/build-runner-image.sh
+```
+
+Layout matches what `actions/setup-{node,python,go}` expects:
+
+```
+/opt/hostedtoolcache/node/<ver>/x64/
+/opt/hostedtoolcache/Python/<ver>/x64/
+/opt/hostedtoolcache/go/<ver>/x64/
+```
+
+With a `<ver>/x64.complete` sentinel file alongside each tree so the setup actions skip download. The runner unit sets `Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache` so the actions find it.
 
 Re-run with a new `RUNNER_VERSION` whenever actions/runner releases a new version. The `--reuse` flag on `incus publish` makes re-runs idempotent.
 
