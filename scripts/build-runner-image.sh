@@ -41,12 +41,13 @@ BASE_IMAGE="${BASE_IMAGE:-images:ubuntu/24.04/cloud}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-vm}"
 
 # Toolcache versions. Override to add/remove versions or pin patches.
-# Default tracks "last 3 majors" of each tool, matching the spread on
-# GitHub-hosted ubuntu-latest. Operator bumps these when upstream
-# releases new patches; the script doesn't auto-resolve.
-TOOLCACHE_NODE_VERSIONS="${TOOLCACHE_NODE_VERSIONS:-20.18.1 22.11.0 24.0.0}"
-TOOLCACHE_PYTHON_VERSIONS="${TOOLCACHE_PYTHON_VERSIONS:-3.11.10 3.12.7 3.13.0}"
-TOOLCACHE_GO_VERSIONS="${TOOLCACHE_GO_VERSIONS:-1.23.4 1.24.4 1.25.3}"
+# Default tracks "last 3 majors" of each tool. Versions can be either
+# a major ("20", "3.12", "1.25") or a full patch ("20.18.1",
+# "3.12.7", "1.25.3"). Major-only is auto-resolved to upstream-latest
+# patch at build time — each image rebuild picks up newer patches.
+TOOLCACHE_NODE_VERSIONS="${TOOLCACHE_NODE_VERSIONS:-20 22 24}"
+TOOLCACHE_PYTHON_VERSIONS="${TOOLCACHE_PYTHON_VERSIONS:-3.11 3.12 3.13}"
+TOOLCACHE_GO_VERSIONS="${TOOLCACHE_GO_VERSIONS:-1.23 1.24 1.25}"
 
 case "$INSTANCE_TYPE" in
 	vm)
@@ -144,9 +145,20 @@ install -d -m 0750 -o root -g root /etc/incuse
 # directory as a half-finished install and re-download.
 install -d -o runner -g runner -m 0755 /opt/hostedtoolcache
 
-# Node — official tarballs from nodejs.org. The tar layout puts
-# everything inside node-vX.Y.Z-linux-x64/, so --strip-components=1.
-for ver in $TOOLCACHE_NODE_VERSIONS; do
+# Node — official tarballs from nodejs.org. Spec can be a major
+# ("20") or a full patch ("20.18.1"). Major-only resolves to latest
+# via the per-major SHASUMS256.txt manifest.
+for spec in $TOOLCACHE_NODE_VERSIONS; do
+	if [[ "$spec" =~ ^[0-9]+$ ]]; then
+		ver=$(curl -fsSL "https://nodejs.org/dist/latest-v${spec}.x/SHASUMS256.txt" \
+			| awk '/linux-x64\.tar\.xz$/ {print $2; exit}' \
+			| sed -E 's/^node-v([0-9.]+)-.*/\1/')
+	else
+		ver="$spec"
+	fi
+	if [[ -z "$ver" ]]; then
+		echo "could not resolve Node $spec" >&2; exit 1
+	fi
 	echo "  -> Node $ver"
 	dir="/opt/hostedtoolcache/node/$ver/x64"
 	install -d -o runner -g runner -m 0755 "$dir"
@@ -156,13 +168,31 @@ for ver in $TOOLCACHE_NODE_VERSIONS; do
 	touch "/opt/hostedtoolcache/node/$ver/x64.complete"
 done
 
-# Python — actions/python-versions prebuilt tarballs. They include a
-# setup.sh that creates the python3, python3.X, pip3 symlinks.
-for ver in $TOOLCACHE_PYTHON_VERSIONS; do
-	echo "  -> Python $ver"
+# Python — actions/python-versions prebuilt tarballs. Their release
+# tags include a build-id suffix ("3.12.7-12345"), so we can't
+# construct the URL from a plain version: query the GH API for the
+# matching tag, then download the linux-24.04-x64 asset.
+for spec in $TOOLCACHE_PYTHON_VERSIONS; do
+	if [[ "$spec" =~ ^[0-9]+\.[0-9]+$ ]]; then
+		prefix="$spec."
+	else
+		prefix="$spec-"
+	fi
+	tag=$(curl -fsSL 'https://api.github.com/repos/actions/python-versions/releases?per_page=100' \
+		| jq -r --arg p "$prefix" '
+			[.[] | .tag_name
+			  | select(startswith($p))
+			  | select(test("-rc|-alpha|-beta") | not)]
+			| sort_by(split("-")[0] | split(".") | map(tonumber))
+			| reverse | .[0] // empty')
+	if [[ -z "$tag" ]]; then
+		echo "could not resolve Python $spec from actions/python-versions" >&2; exit 1
+	fi
+	ver="${tag%%-*}"
+	echo "  -> Python $ver (tag=$tag)"
 	dir="/opt/hostedtoolcache/Python/$ver/x64"
 	install -d -o runner -g runner -m 0755 "$dir"
-	curl -fsSL "https://github.com/actions/python-versions/releases/download/$ver/python-$ver-linux-24.04-x64.tar.gz" \
+	curl -fsSL "https://github.com/actions/python-versions/releases/download/$tag/python-$ver-linux-24.04-x64.tar.gz" \
 		| tar -xz -C "$dir"
 	if [[ -x "$dir/setup.sh" ]]; then
 		(cd "$dir" && ./setup.sh)
@@ -171,8 +201,24 @@ for ver in $TOOLCACHE_PYTHON_VERSIONS; do
 	touch "/opt/hostedtoolcache/Python/$ver/x64.complete"
 done
 
-# Go — official tarballs from go.dev/dl. Layout: go/bin, go/src etc.
-for ver in $TOOLCACHE_GO_VERSIONS; do
+# Go — official tarballs from go.dev/dl. The /?mode=json endpoint
+# lists current stable + previous-stable releases; we filter for the
+# requested major and pick the highest patch.
+GO_RELEASES=$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all')
+for spec in $TOOLCACHE_GO_VERSIONS; do
+	if [[ "$spec" =~ ^[0-9]+\.[0-9]+$ ]]; then
+		ver=$(echo "$GO_RELEASES" | jq -r --arg s "$spec" '
+			[.[] | .version | sub("^go"; "")
+			  | select(startswith($s + "."))
+			  | select(test("rc|beta") | not)]
+			| sort_by(split(".") | map(tonumber))
+			| reverse | .[0] // empty')
+	else
+		ver="$spec"
+	fi
+	if [[ -z "$ver" ]]; then
+		echo "could not resolve Go $spec" >&2; exit 1
+	fi
 	echo "  -> Go $ver"
 	dir="/opt/hostedtoolcache/go/$ver/x64"
 	install -d -o runner -g runner -m 0755 "$dir"
