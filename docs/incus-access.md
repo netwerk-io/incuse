@@ -89,7 +89,7 @@ sudo chmod 644 /etc/incuse/server.crt
 
 ```yaml
 incus:
-  url: https://rocket.lkv.netwerk.io:8443
+  url: https://incus.example.com:8443
   cert_file: /etc/incuse/client.crt
   key_file: /etc/incuse/client.key
   server_cert_file: /etc/incuse/server.crt

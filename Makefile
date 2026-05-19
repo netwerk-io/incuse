@@ -46,7 +46,7 @@ clean:
 # Local-dev convenience target — production should consume the release
 # tarball, not this.
 #
-#   make install-remote HOST=rocket.lkv.netwerk.io
+#   make install-remote HOST=<hostname>
 INSTALL_HOST ?= $(HOST)
 INSTALL_USER ?= root
 install-remote:

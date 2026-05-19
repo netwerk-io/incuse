@@ -132,7 +132,7 @@ curl -fsS http://127.0.0.1:9090/metrics   # Prometheus exposition
 scrape_configs:
   - job_name: incuse
     static_configs:
-      - targets: ["rocket.lkv.netwerk.io:9090"]
+      - targets: ["incuse-host.example.com:9090"]
 ```
 
 ### Useful metrics
