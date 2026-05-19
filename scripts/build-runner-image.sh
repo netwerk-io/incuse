@@ -301,7 +301,7 @@ fi
 # machine-id, so a shared machine-id means every clone presents the
 # same DHCP client identifier and the LAN's DHCP server hands them
 # all the same IPv4 lease — verified on rocket where 10 baked VMs
-# with unique MACs all ended up with 192.168.1.169.
+# with unique MACs all ended up with the same IPv4 lease.
 : > /etc/machine-id
 rm -f /var/lib/dbus/machine-id
 ln -sf /etc/machine-id /var/lib/dbus/machine-id

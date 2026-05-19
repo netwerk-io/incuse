@@ -1,6 +1,6 @@
 # Deployment
 
-This is the from-zero install path on a single Debian/Ubuntu host running Incus. The MVP target is `rocket.lkv.netwerk.io` (Debian 13, kernel 6.12.x, Incus 6.20+).
+This is the from-zero install path on a single Debian/Ubuntu host running Incus 6.20+ on kernel 6.12 or newer.
 
 ## 1. Prerequisites
 
@@ -68,7 +68,7 @@ sudo bash install.sh "./incuse-${TAG}-linux-amd64"
 Or, from a checkout (dev path):
 
 ```sh
-make install-remote HOST=rocket.lkv.netwerk.io
+make install-remote HOST=<hostname>
 ```
 
 The installer:
