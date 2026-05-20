@@ -1,4 +1,4 @@
-.PHONY: all build test test-short lint fmt vet tidy clean install-remote
+.PHONY: all build test test-short lint fmt vet tidy clean install-remote release-snapshot
 
 GO := go
 GOFLAGS := -trimpath
@@ -39,7 +39,13 @@ tidy:
 	$(GO) mod tidy
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) dist
+
+# release-snapshot runs GoReleaser locally without publishing — useful for
+# verifying .goreleaser.yaml after changes. Produces dist/*.tar.gz and
+# SHA256SUMS the same way the tagged-release pipeline does.
+release-snapshot:
+	goreleaser release --snapshot --clean --skip=publish
 
 # install-remote builds a linux/amd64 binary, ships it to a remote host
 # via scp, runs deploy/systemd/install.sh, and restarts the service.

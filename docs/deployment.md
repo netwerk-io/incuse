@@ -51,18 +51,18 @@ Per-launch the orchestrator overrides `limits.cpu`, `limits.memory`, and the roo
 
 ## 3. Install incuse
 
-Either install the release artefacts:
+Either install the release artefacts (published for `linux-amd64` and `linux-arm64`):
 
 ```sh
 TAG=v0.1.0
+ARCH=linux-amd64   # or linux-arm64
 mkdir -p /tmp/incuse-install && cd /tmp/incuse-install
-curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
-curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse.service"
-curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse.example.yaml"
-curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/install.sh"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-${ARCH}.tar.gz"
 curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/SHA256SUMS"
-sha256sum -c SHA256SUMS
-sudo bash install.sh "./incuse-${TAG}-linux-amd64"
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf "incuse-${TAG}-${ARCH}.tar.gz"
+cd "incuse-${TAG}-${ARCH}"
+sudo bash install.sh ./incuse
 ```
 
 Or, from a checkout (dev path):

@@ -1,0 +1,52 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: incuse
+    main: ./cmd/incuse
+    binary: incuse
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+
+archives:
+  - id: incuse
+    ids:
+      - incuse
+    formats:
+      - tar.gz
+    name_template: "incuse-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    wrap_in_directory: true
+    files:
+      - src: deploy/systemd/incuse.service
+        dst: incuse.service
+      - src: deploy/systemd/incuse.example.yaml
+        dst: incuse.example.yaml
+      - src: deploy/systemd/install.sh
+        dst: install.sh
+
+checksum:
+  name_template: SHA256SUMS
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github-native
+
+release:
+  draft: false
+  prerelease: auto
