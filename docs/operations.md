@@ -104,11 +104,13 @@ incus list --project incuse -c name,config:user.incuse.managed -f csv \
 
 ```sh
 TAG=v0.2.0
+ARCH=linux-amd64
 cd /tmp/incuse-install
-curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-linux-amd64"
+curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/incuse-${TAG}-${ARCH}.tar.gz"
 curl -fsSLO "https://github.com/netwerk-io/incuse/releases/download/${TAG}/SHA256SUMS"
-sha256sum -c SHA256SUMS
-sudo install -m 0755 "incuse-${TAG}-linux-amd64" /usr/local/bin/incuse
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf "incuse-${TAG}-${ARCH}.tar.gz"
+sudo install -m 0755 "incuse-${TAG}-${ARCH}/incuse" /usr/local/bin/incuse
 sudo systemctl restart incuse
 ```
 
